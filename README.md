@@ -1,141 +1,103 @@
-<div align="center">
-
+ <div align="center">
 <img src="App/Assets.xcassets/BrandIcon.imageset/BrandIcon.png" width="128" height="128" alt="小浣熊阅读" />
 
-# 小浣熊阅读
+小浣熊阅读
 
-**搜书快一点，读书舒服一点。**
+个人学习 · 源码研究 · 兼容性测试
 
-一款优先兼容阅读书源的 iOS 阅读器
-
-![iOS 15+](https://img.shields.io/badge/iOS-15%2B-315C50)
-![Swift](https://img.shields.io/badge/Swift-F05138?logo=swift&logoColor=white)
-[![GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue)](LICENSE)
-[![TestFlight 公测](https://img.shields.io/badge/TestFlight-Beta-0D96F6?logo=apple&logoColor=white)](https://testflight.apple.com/join/RSmhQ9Xn)
-
-[下载安装](#下载安装) · [主要功能](#主要功能) · [应用截图](#应用截图) · [书源说明](#书源说明) · [问题反馈](https://github.com/Aminark/legado-ios/issues)
+基于开源 iOS 阅读器项目的个人学习与实验版本
 
 </div>
 
-小浣熊阅读是一款 iOS 阅读器，由 [Aminark](https://github.com/Aminark) 维护，优先兼容阅读书源。希望从导入书源、搜索书籍到打开阅读，都能方便、顺手一些。
+项目说明
 
-项目仍在边用边改，书源兼容和阅读体验会继续完善。
+本项目是基于 Aminark/legado-ios 创建的个人 Fork，主要用于学习 Swift、研究 iOS 阅读器的实现方式，以及测试 Android 阅读书源在 iOS 平台上的兼容性。
 
-**小浣熊阅读不提供书源或在线书库。** 书源需由用户自行从网络公开分享获取，或自行编写后导入；也可以直接阅读本地 TXT / EPUB。
+本仓库保留原项目的基本结构和功能，并根据个人学习、研究和测试需要进行探索性修改。
 
-## 下载安装
+本项目仅供个人学习、技术研究和测试使用，不作为原作者的官方发行版本，也不代表原作者的立场。
 
-支持 **iOS / iPadOS 15.0 及以上**。
+原项目地址：
 
-### TestFlight 公测（推荐）
+https://github.com/Aminark/legado-ios
 
-**[点击加入小浣熊阅读 TestFlight 公测](https://testflight.apple.com/join/RSmhQ9Xn)**
+原作者：@Aminark
 
-1. 在 iPhone 或 iPad 上安装 Apple 官方的 [TestFlight](https://apps.apple.com/app/testflight/id899247664)。
-2. 使用同一台设备打开上方公测链接，按页面提示接受邀请并安装「小浣熊阅读」。
-3. 后续可在 TestFlight 中获取测试版更新，也欢迎通过 TestFlight 或 [GitHub Issues](https://github.com/Aminark/legado-ios/issues) 反馈问题。
+主要研究方向
 
-通过 TestFlight 安装无需自行签名。
+目前主要关注以下内容：
 
-### IPA 与源码安装
+* 书源兼容性：研究 Android 阅读书源在 iOS 环境下的解析和执行差异。
+* 规则引擎：分析 JavaScript 规则执行、变量传递、请求参数和解析流程。
+* 搜索与书籍管理：研究多书源搜索、书籍详情、目录和正文解析。
+* 阅读器功能：了解 SwiftUI 阅读界面、阅读排版和交互逻辑。
+* 源码构建：学习 Xcode 工程结构、Swift 编译及 iOS 应用打包流程。
 
-**IPA 下载见 [GitHub Releases](https://github.com/Aminark/legado-ios/releases)，需要自行签名安装。** 请下载附件中的 `.ipa` 文件；`Source code` 是源码压缩包。
+以上方向会根据实际测试情况逐步推进，不保证所有功能均已修改或完善。
 
-- **自行签名安装**：使用自己的签名工具安装 IPA。免费 Apple 账号自签的描述文件有效期通常为 7 天，到期需要重新签名安装，见 [Apple 说明](https://developer.apple.com/help/account/basics/about-your-developer-account#enable-a-personal-team-in-xcode)。
-- **巨魔安装**：已支持 [TrollStore](https://github.com/opa334/TrollStore) 的设备可自行尝试安装，具体系统兼容范围以 TrollStore 项目说明为准。
-- **源码构建**：有 macOS 和 Xcode 的朋友也可以自行编译，见 [开发指南](docs/DEVELOPMENT.md)。
+当前功能基础
 
-这个项目主要是自己使用和分享，没有盈利计划。
+本项目继承自原项目，当前基础功能包括：
 
-## 主要功能
+功能	说明
+阅读书源	JSON、文件、URL 和二维码导入，书源管理与调试
+搜索	多书源搜索和结果展示
+书架	书籍管理、章节更新和阅读进度
+阅读器	排版、主题、目录、书签和阅读模式
+本地阅读	TXT / EPUB 导入与阅读
+语音朗读	系统朗读及 HTTP TTS 配置
+其他功能	RSS、阅读记录和缓存管理
 
-| 功能 | 说明 |
-| --- | --- |
-| 阅读书源 | 支持 JSON、文件、URL 和二维码导入，以及书源分组、编辑和调试 |
-| 快速搜书 | 多书源并发搜索，结果陆续展示；重复搜索可先显示有效缓存，同书多源合并 |
-| 书架管理 | 列表、网格、分组、章节更新、换源和本机阅读进度 |
-| 阅读排版 | 字号、间距、边距、日夜主题、滚动与分页阅读、目录和书签 |
-| 本地 TXT / EPUB | TXT 自定义目录规则；EPUB 2/3 原书排版、封面、内嵌图表、目录与续读 |
-| 语音朗读 | 系统朗读与 HTTP TTS 配置 |
-| 阅读工具 | 替换净化、阅读记录、时长统计和缓存管理 |
-| RSS 订阅 | 订阅源管理与内容阅读 |
+功能的实际情况以当前源码和测试版本为准。
 
-搜书速度是我比较在意的部分，目前做了并发调度、有效书源优先和结果缓存等优化。实际体验仍会受到网络和书源网站响应的影响。
+编译与安装测试
 
-兼容阅读书源不代表所有书源都能直接使用。复杂 JavaScript、登录、验证码和 WebView 规则仍可能存在平台差异，遇到问题欢迎反馈。
+本项目使用 GitHub Actions 进行云端 iOS 编译。
 
-## 应用截图
+目前已验证的流程：
 
-<table>
-  <tr>
-    <td align="center"><strong>书架</strong><br /><a href="docs/images/bookshelf.png"><img src="docs/images/bookshelf.png" width="230" alt="小浣熊阅读书架" /></a></td>
-    <td align="center"><strong>搜书</strong><br /><a href="docs/images/search.png"><img src="docs/images/search.png" width="230" alt="小浣熊阅读搜索结果与缓存展示" /></a></td>
-    <td align="center"><strong>书源管理</strong><br /><a href="docs/images/sources.png"><img src="docs/images/sources.png" width="230" alt="小浣熊阅读书源管理" /></a></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>日间阅读</strong><br /><a href="docs/images/reader.png"><img src="docs/images/reader.png" width="230" alt="小浣熊阅读纸色主题" /></a></td>
-    <td align="center"><strong>夜间阅读</strong><br /><a href="docs/images/reader-dark.png"><img src="docs/images/reader-dark.png" width="230" alt="小浣熊阅读夜间主题" /></a></td>
-    <td align="center"><strong>我的</strong><br /><a href="docs/images/profile.png"><img src="docs/images/profile.png" width="230" alt="小浣熊阅读个人中心" /></a></td>
-  </tr>
-</table>
+1. 将源码提交到个人 GitHub 仓库。
+2. 使用 GitHub Actions 在 macOS Runner 上编译 iOS 真机版本。
+3. 生成未签名 IPA 安装包。
+4. 下载 IPA，使用个人证书进行签名。
+5. 安装到 iPhone 进行实际运行测试。
 
-<details>
-<summary>查看更多截图：发现、阅读统计、关于</summary>
+普通 Apple 账号的个人签名具有有效期限制，具体以 Apple 的签名机制为准。
 
-<table>
-  <tr>
-    <td align="center"><strong>发现</strong><br /><a href="docs/images/explore.png"><img src="docs/images/explore.png" width="230" alt="小浣熊阅读发现页面" /></a></td>
-    <td align="center"><strong>阅读统计</strong><br /><a href="docs/images/statistics.png"><img src="docs/images/statistics.png" width="230" alt="小浣熊阅读统计页面" /></a></td>
-    <td align="center"><strong>关于</strong><br /><a href="docs/images/about.png"><img src="docs/images/about.png" width="230" alt="小浣熊阅读关于页面" /></a></td>
-  </tr>
-</table>
+本仓库不保存个人签名证书、私钥或 Apple 账号信息。
 
-</details>
+测试说明
 
-截图使用演示书籍、书源和正文，点击可查看大图。
+由于本项目属于个人学习和实验性质：
 
-## 开始使用
+* 源码可能包含尚未完成的修改。
+* 部分功能可能存在兼容性问题。
+* 不保证所有第三方书源均能正常使用。
+* 测试结果仅代表当前设备、系统和书源环境下的实际表现。
+* 不建议将实验版本作为稳定的日常发行版本。
 
-1. 自行准备你有权使用的阅读书源，安装后进入「我的 → 书源管理」导入。
-2. 在书架点击搜索，输入书名或作者，打开书籍详情后开始阅读。
-3. 将书籍加入书架，方便下次继续阅读；也可以从书架直接导入本地 TXT 或 EPUB。
+使用第三方书源时，请自行确认来源及内容授权，遵守相关网站的使用规则。
 
-4. 在阅读页调整排版、主题、书签和朗读设置。
+免责声明
 
-EPUB 导入入口：书架 → 更多 → 本地书，或「我的 → 文件管理 → 导入 TXT / EPUB」。自 v0.1.13 起使用 Readium 显示无 DRM EPUB 2/3，保留原书 XHTML、CSS、SVG 封面、内嵌插图和表格，支持目录、书签、翻页／滚动、主题与字号设置，并保存原排版阅读位置。已导入但缺封面的书会自动尝试补回封面；原有朗读和文字工具可从 EPUB 阅读菜单「文字阅读与朗读」进入。
+本项目不提供、内置或分发网络书源，也不提供在线书库。
 
-应用支持 `legado://` 规则导入链接。来源网站改版或停止服务时，书源规则可能需要更新。
+在线书籍正文、封面、简介等内容由对应的第三方网站提供，其版权归原作者或合法权利人所有。
 
-## 书源说明
+本项目仅用于学习开源软件实现、研究技术兼容性和个人测试。使用者应自行确保其行为符合所在地法律法规及相关服务条款。
 
-小浣熊阅读仅提供书源解析、书籍管理和阅读功能，**不提供、内置或分发网络书源**。用户使用的书源来自网络公开分享，或由用户自行编写、导入。
+开源许可
 
-在线书籍正文、封面、简介及订阅内容由书源对应的第三方网站提供，版权归原作者或合法权利人所有。网络公开分享、书源可导入或内容可访问，不代表已获得内容授权。
+原项目采用 GNU General Public License v3.0（GPL-3.0）。
 
-请自行核实书源和内容的来源，在获得授权或法律允许的范围内使用，遵守来源网站的使用规则，支持正版阅读。第三方网站或书源失效时，需要更新规则或更换来源。
+本 Fork 遵循适用的 GPL-3.0 许可要求。原项目及第三方组件的版权和许可信息以各自声明为准。
 
-## 为什么做这个
+* 原项目 LICENSE
+* 原项目第三方声明
+* GNU GPL v3
 
-我之前一直用香色闺阁看书，也用得挺习惯。不过在自己的使用过程中，搜书等待时间一直让我比较难受。后来能用的书源越来越少，就想着干脆自己折腾一个。
+本仓库与原作者的官方项目相互独立，相关修改和测试记录以本仓库的提交历史为准。
 
-最开始只是打算自己用：搜书快一点，导入书源方便一点，找到书以后能舒舒服服地看下去。
+⸻
 
-后来就这样边写边用、缺什么补什么，慢慢成了现在的小浣熊阅读。既然可能还有朋友有同样的需求，就把它开源出来，欢迎一起折腾。
-
-## 反馈与贡献
-
-遇到问题或有功能建议，欢迎提交 [Issue](https://github.com/Aminark/legado-ios/issues)。反馈时请附上应用版本、系统版本、设备和复现步骤；书源问题尽量提供最小规则。
-
-请先去掉日志和规则中的账号、Cookie、Token 等个人信息。欢迎提交代码、兼容用例和文档改进，具体见 [贡献指南](CONTRIBUTING.md)。
-
-## 开源许可
-
-本项目采用 **GNU GPL v3**，详见 [LICENSE](LICENSE)。
-
-第三方材料的版权与许可见 [第三方声明](THIRD_PARTY_NOTICES.md)。
-
-请遵守书源网站的使用规则和内容授权，支持正版阅读。
-
-## 友情链接
-
-[LINUX DO](https://linux.do/) —— 真诚分享、友好讨论的技术社区，本项目的交流与反馈也发布于此
+个人学习与测试项目 · 非官方发行版本 · 基于开源项目进行研究和修改
