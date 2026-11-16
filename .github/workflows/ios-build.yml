@@ -1,0 +1,58 @@
+
+name: iOS Simulator Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Legado for iOS Simulator
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project Legado.xcodeproj \
+            -scheme Legado
+
+      - name: Build iOS Simulator app
+        run: |
+          xcodebuild \
+            -project Legado.xcodeproj \
+            -scheme Legado \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package app
+        run: |
+          APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Debug-iphonesimulator/Legado.app"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Error: Legado.app was not found"
+            exit 1
+          fi
+
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$APP_PATH" \
+            "$RUNNER_TEMP/Legado-iOS-Simulator.zip"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Legado-iOS-Simulator
+          path: ${{ runner.temp }}/Legado-iOS-Simulator.zip
+          if-no-files-found: error
+          retention-days: 7
