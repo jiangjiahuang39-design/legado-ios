@@ -1,0 +1,72 @@
+
+name: iOS Unsigned IPA Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Legado Unsigned IPA
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project Legado.xcodeproj \
+            -scheme Legado
+
+      - name: Build iOS Device app
+        run: |
+          xcodebuild \
+            -project Legado.xcodeproj \
+            -scheme Legado \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/Legado.app"
+          IPA_ROOT="$RUNNER_TEMP/IPA"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Error: Legado.app was not found"
+            exit 1
+          fi
+
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy \
+            -c "Print :CFBundleIdentifier" \
+            "$APP_PATH/Info.plist")
+
+          echo "Bundle Identifier: $BUNDLE_ID"
+
+          mkdir -p "$IPA_ROOT/Payload"
+          cp -R "$APP_PATH" "$IPA_ROOT/Payload/"
+
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$IPA_ROOT/Payload" \
+            "$RUNNER_TEMP/Legado-Unsigned.ipa"
+
+          echo "Unsigned IPA created successfully"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Legado-Unsigned-IPA
+          path: ${{ runner.temp }}/Legado-Unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
