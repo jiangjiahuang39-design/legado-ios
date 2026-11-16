@@ -249,7 +249,7 @@ enum LegadoCryptoBridge {
     // MARK: - 对称加解密
 
     private enum SymmetricCipher {
-        enum Padding { case pkcs7, none, zero }
+        enum Padding { case pkcs7, noPadding, zero }
 
         static func run(
             encrypt: Bool,
@@ -314,7 +314,7 @@ enum LegadoCryptoBridge {
             let padding: Padding
             switch paddingName {
             case "PKCS5PADDING", "PKCS7PADDING": padding = .pkcs7
-            case "NOPADDING": padding = .none
+            case "NOPADDING": padding = .noPadding
             case "ZEROPADDING": padding = .zero
             default: throw CryptoFailure("不支持的填充 \(paddingName)")
             }
@@ -337,7 +337,7 @@ enum LegadoCryptoBridge {
                 case .zero:
                     let remainder = data.count % blockSize
                     if remainder != 0 { data += [UInt8](repeating: 0, count: blockSize - remainder) }
-                case .none:
+                case .noPadding:
                     if isBlockMode, !data.count.isMultiple(of: blockSize) {
                         throw CryptoFailure("NoPadding 要求数据长度为 \(blockSize) 的整数倍")
                     }
@@ -364,7 +364,7 @@ enum LegadoCryptoBridge {
                     output.removeLast(Int(last))
                 case .zero:
                     while output.last == 0 { output.removeLast() }
-                case .none:
+                case .noPadding:
                     break
                 }
             }
