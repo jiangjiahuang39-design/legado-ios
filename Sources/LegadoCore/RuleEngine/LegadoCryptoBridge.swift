@@ -81,7 +81,44 @@ enum LegadoCryptoBridge {
         java.setObject(hmacBlock, forKeyedSubscript: "__legadoHmac" as NSString)
         java.setObject(encodeBlock, forKeyedSubscript: "__legadoEncodeBytes" as NSString)
         context.evaluateScript(bootstrap)
+
+        let cacheGet: @convention(block) (String, Bool) -> Any? = { key, memoryOnly in
+            LegadoJSCacheStore.shared.get(key, memoryOnly: memoryOnly)
+        }
+        let cachePut: @convention(block) (String, String, Double, Bool) -> Void = { key, value, seconds, memoryOnly in
+            LegadoJSCacheStore.shared.put(key, value, seconds: seconds, memoryOnly: memoryOnly)
+        }
+        let cacheDelete: @convention(block) (String, Bool) -> Void = { key, memoryOnly in
+            LegadoJSCacheStore.shared.delete(key, memoryOnly: memoryOnly)
+        }
+        java.setObject(cacheGet, forKeyedSubscript: "__legadoCacheGet" as NSString)
+        java.setObject(cachePut, forKeyedSubscript: "__legadoCachePut" as NSString)
+        java.setObject(cacheDelete, forKeyedSubscript: "__legadoCacheDelete" as NSString)
+        context.evaluateScript(cacheBootstrap)
     }
+
+    /// Legado 的全局 `cache` 对象：get / put(key, value, saveTime 秒，0 为不过期) / delete，
+    /// 以及 getFromMemory / putMemory / deleteMemory（仅内存）。
+    private static let cacheBootstrap = #"""
+    (function () {
+      var g = java.__legadoCacheGet, p = java.__legadoCachePut, d = java.__legadoCacheDelete;
+      function str(v) {
+        if (v === null || v === undefined) return '';
+        if (typeof v === 'string') return v;
+        if (typeof v === 'object') { try { return JSON.stringify(v); } catch (e) { return String(v); } }
+        return String(v);
+      }
+      function read(k, mem) { var v = g(String(k), mem); return v === undefined ? null : v; }
+      this.cache = {
+        get: function (k) { return read(k, false); },
+        put: function (k, v, t) { p(String(k), str(v), Number(t) || 0, false); return v; },
+        delete: function (k) { d(String(k), false); },
+        getFromMemory: function (k) { return read(k, true); },
+        putMemory: function (k, v) { p(String(k), str(v), 0, true); return v; },
+        deleteMemory: function (k) { d(String(k), true); }
+      };
+    }).call(this);
+    """#
 
     // MARK: - JS 侧包装
 
@@ -425,5 +462,42 @@ enum LegadoCryptoBridge {
             }
             return Array(output.prefix(moved + finalMoved))
         }
+    }
+}
+
+
+/// `cache` 的存储：持久部分放 UserDefaults（带过期时间），内存部分放进程内字典。
+private final class LegadoJSCacheStore: @unchecked Sendable {
+    static let shared = LegadoJSCacheStore()
+
+    private let lock = NSLock()
+    private var memory: [String: String] = [:]
+    private let defaults = UserDefaults.standard
+    private let prefix = "legado.jscache."
+
+    func get(_ key: String, memoryOnly: Bool) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        if memoryOnly { return memory[key] }
+        let storeKey = prefix + key
+        guard let entry = defaults.dictionary(forKey: storeKey),
+              let value = entry["v"] as? String else { return nil }
+        let expires = (entry["e"] as? Double) ?? 0
+        if expires > 0, Date().timeIntervalSince1970 > expires {
+            defaults.removeObject(forKey: storeKey)
+            return nil
+        }
+        return value
+    }
+
+    func put(_ key: String, _ value: String, seconds: Double, memoryOnly: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        if memoryOnly { memory[key] = value; return }
+        let expires = seconds > 0 ? Date().timeIntervalSince1970 + seconds : 0
+        defaults.set(["v": value, "e": expires] as [String: Any], forKey: prefix + key)
+    }
+
+    func delete(_ key: String, memoryOnly: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        if memoryOnly { memory.removeValue(forKey: key) } else { defaults.removeObject(forKey: prefix + key) }
     }
 }
