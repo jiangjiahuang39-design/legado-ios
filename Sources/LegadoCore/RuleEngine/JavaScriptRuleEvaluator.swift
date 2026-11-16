@@ -457,6 +457,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
         context.setObject((executionContext.content ?? result).foundationObject, forKeyedSubscript: "src" as NSString)
         context.setObject(result.foundationObject, forKeyedSubscript: "$" as NSString)
         context.setObject(executionContext.baseURL, forKeyedSubscript: "baseUrl" as NSString)
+        context.evaluateScript(Self.structuredValuePrelude)
         context.setObject(executionContext.key ?? "", forKeyedSubscript: "key" as NSString)
         context.setObject(executionContext.page ?? 0, forKeyedSubscript: "page" as NSString)
         installJava(in: context, variables: box, result: result, executionContext: executionContext)
@@ -1641,6 +1642,26 @@ public struct JavaScriptRuleEvaluator: Sendable {
         })
     }
 
+    /// Legado 里 `result`/`src` 在 JS 中通常是字符串，书源常写 `JSON.parse(result)`。
+    /// 这里的 `result` 可能已是解析后的对象/数组，直接 JSON.parse 会得到 "[object Object]" 而报
+    /// `JSON Parse error: Unexpected identifier "object"`。给对象补一个不可枚举的 toString，
+    /// 使 `JSON.parse(result)` / `String(result)` 得到 JSON 文本，同时 `result.data.list` 这类对象访问不受影响。
+    private static let structuredValuePrelude = """
+    (function (values) {
+      for (var i = 0; i < values.length; i++) {
+        var v = values[i];
+        if (v !== null && typeof v === 'object') {
+          try {
+            Object.defineProperty(v, 'toString', {
+              value: function () { return JSON.stringify(this); },
+              enumerable: false, configurable: true, writable: true
+            });
+          } catch (e) {}
+        }
+      }
+    })([result, src, $]);
+    """
+
     private static let javaImporterBootstrap = #"""
         (function (global) {
           'use strict';
@@ -1709,20 +1730,25 @@ public struct JavaScriptRuleEvaluator: Sendable {
           });
           var Mac = javaClass('Mac', {
             getInstance: function (algorithm) {
-              if (NativeString(algorithm).toUpperCase() !== 'HMACSHA1') {
+              var macName = NativeString(algorithm).toUpperCase();
+              var supportedMacs = ['HMACSHA1', 'HMACSHA224', 'HMACSHA256', 'HMACSHA384', 'HMACSHA512', 'HMACMD5'];
+              if (supportedMacs.indexOf(macName) < 0) {
                 throw new Error('Unsupported Mac algorithm: ' + algorithm);
               }
               var key = null;
               return {
                 init: function (spec) {
-                  if (!(spec instanceof SecretKeySpec) || spec.algorithm.toUpperCase() !== 'HMACSHA1') {
-                    throw new TypeError('HmacSHA1 SecretKeySpec required');
+                  if (!(spec instanceof SecretKeySpec) || spec.algorithm.toUpperCase() !== macName) {
+                    throw new TypeError(NativeString(algorithm) + ' SecretKeySpec required');
                   }
                   key = spec.key;
                 },
                 doFinal: function (bytes) {
                   if (key === null) throw new Error('Mac not initialized');
-                  return __legadoHmacSHA1(key, checkedBytes(bytes));
+                  if (macName === 'HMACSHA1') return __legadoHmacSHA1(key, checkedBytes(bytes));
+                  var macResult = java.__legadoHmac(NativeString(algorithm), key, checkedBytes(bytes));
+                  if (!Array.isArray(macResult)) throw new Error('Mac operation failed: ' + algorithm);
+                  return macResult;
                 }
               };
             }
