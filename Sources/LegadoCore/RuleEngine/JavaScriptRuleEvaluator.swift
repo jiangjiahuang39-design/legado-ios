@@ -923,6 +923,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
         java?.setObject(connect, forKeyedSubscript: "connect" as NSString)
         java?.setObject(directRequest, forKeyedSubscript: "__directRequest" as NSString)
         context.setObject(java, forKeyedSubscript: "java" as NSString)
+        LegadoCryptoBridge.install(on: java, in: context)
         context.evaluateScript("""
             (function () {
               var getVariable = java.get;
