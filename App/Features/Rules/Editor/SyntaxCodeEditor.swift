@@ -47,18 +47,46 @@ struct SyntaxCodeEditor: UIViewRepresentable {
         let bar = UIToolbar()
         bar.tintColor = UIColor(ReadingTheme.accent)
         bar.sizeToFit()
-        bar.items = [
-            UIBarButtonItem(image: UIImage(systemName: "magnifyingglass"), primaryAction: UIAction(title: "", subtitle: nil) { [weak view, coordinator = context.coordinator] _ in
-                guard let view else { return }
-                if #available(iOS 16.0, *) { view.findInteraction?.presentFindNavigator(showingReplace: true) }
-                else { coordinator.presentFindAndReplace(in: view) }
-            }),
-            UIBarButtonItem(image: UIImage(systemName: "arrow.uturn.backward"), primaryAction: UIAction(title: "", subtitle: nil) { [weak view] _ in view?.undoManager?.undo() }),
-            UIBarButtonItem(image: UIImage(systemName: "arrow.uturn.forward"), primaryAction: UIAction(title: "", subtitle: nil) { [weak view] _ in view?.undoManager?.redo() }),
-        ] + ["@", "$", "{}", "[]", "##", "\n", "\t"].map { symbol in
-            UIBarButtonItem(title: symbol == "\n" ? "↵" : symbol == "\t" ? "⇥" : symbol,
-                primaryAction: UIAction(title: "", subtitle: nil) { [weak view] _ in view?.insertText(symbol) })
-        } + [UIBarButtonItem(systemItem: .flexibleSpace), UIBarButtonItem(title: "完成", primaryAction: UIAction(title: "", subtitle: nil) { [weak view] _ in view?.resignFirstResponder() })]
+        // 拆成独立语句并标注类型，避免一个超长数组表达式让编译器类型检查超时。
+        let findAction = UIAction(title: "", subtitle: nil) { [weak view, coordinator = context.coordinator] (_: UIAction) in
+            guard let view else { return }
+            if #available(iOS 16.0, *) {
+                view.findInteraction?.presentFindNavigator(showingReplace: true)
+            } else {
+                coordinator.presentFindAndReplace(in: view)
+            }
+        }
+        let undoAction = UIAction(title: "", subtitle: nil) { [weak view] (_: UIAction) in
+            view?.undoManager?.undo()
+        }
+        let redoAction = UIAction(title: "", subtitle: nil) { [weak view] (_: UIAction) in
+            view?.undoManager?.redo()
+        }
+        var barItems: [UIBarButtonItem] = []
+        barItems.append(UIBarButtonItem(image: UIImage(systemName: "magnifyingglass"), primaryAction: findAction))
+        barItems.append(UIBarButtonItem(image: UIImage(systemName: "arrow.uturn.backward"), primaryAction: undoAction))
+        barItems.append(UIBarButtonItem(image: UIImage(systemName: "arrow.uturn.forward"), primaryAction: redoAction))
+        let symbols: [String] = ["@", "$", "{}", "[]", "##", "\n", "\t"]
+        for symbol in symbols {
+            let caption: String
+            if symbol == "\n" {
+                caption = "↵"
+            } else if symbol == "\t" {
+                caption = "⇥"
+            } else {
+                caption = symbol
+            }
+            let insertAction = UIAction(title: "", subtitle: nil) { [weak view] (_: UIAction) in
+                view?.insertText(symbol)
+            }
+            barItems.append(UIBarButtonItem(title: caption, primaryAction: insertAction))
+        }
+        let doneAction = UIAction(title: "", subtitle: nil) { [weak view] (_: UIAction) in
+            _ = view?.resignFirstResponder()
+        }
+        barItems.append(UIBarButtonItem(systemItem: .flexibleSpace))
+        barItems.append(UIBarButtonItem(title: "完成", primaryAction: doneAction))
+        bar.items = barItems
         bar.items?.last?.accessibilityIdentifier = "syntaxCodeEditor.done"
         if #available(iOS 26.0, *) {
             view.inputAccessoryView = CodeInputAccessory(items: bar.items ?? [])
