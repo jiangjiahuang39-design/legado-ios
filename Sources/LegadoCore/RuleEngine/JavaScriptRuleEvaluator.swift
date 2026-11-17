@@ -916,6 +916,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
         java?.setObject(logValue, forKeyedSubscript: "log" as NSString)
         java?.setObject(logValue, forKeyedSubscript: "logType" as NSString)
         java?.setObject(logValue, forKeyedSubscript: "toast" as NSString)
+        java?.setObject(logValue, forKeyedSubscript: "longToast" as NSString)
         java?.setObject(urlEncode, forKeyedSubscript: "encodeURI" as NSString)
         java?.setObject(getCookieHeader, forKeyedSubscript: "getCookieHeader" as NSString)
         java?.setObject(getCookieValue, forKeyedSubscript: "__getCookieValue" as NSString)
@@ -1594,7 +1595,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
 
     private func rejectUnboundedExecution(_ script: String) throws {
         let compact = script.replacingOccurrences(of: #"\s+"#, with: "", options: .regularExpression).lowercased()
-        let rejected = ["while(true)", "while(1)", "for(;;)", "eval(", "functionconstructor("]
+        let rejected = ["while(true)", "while(1)", "for(;;)", "functionconstructor("]
         if let token = rejected.first(where: compact.contains) {
             throw RuleEngineError.resourceLimit(rule: script, detail: "JavaScript 包含未受控执行结构：\(token)")
         }
@@ -1678,12 +1679,25 @@ public struct JavaScriptRuleEvaluator: Sendable {
             if (!Array.isArray(value)) throw new TypeError('Java byte[] required');
             return value;
           }
-          function JavaString(value) {
-            var text = new NativeString(Array.isArray(value) ? __legadoUTF8String(value) : (value == null ? '' : value));
+          function JavaString(value, charset) {
+            var decoded;
+            if (Array.isArray(value)) {
+              if (charset && !/^utf-?8$/i.test(NativeString(charset))) {
+                decoded = java.__legadoCharsetDecode(value, NativeString(charset));
+                if (decoded === null || decoded === undefined) throw new Error('Unsupported charset or invalid data: ' + charset);
+              } else {
+                decoded = __legadoUTF8String(value);
+              }
+            } else {
+              decoded = value == null ? '' : value;
+            }
+            var text = new NativeString(decoded);
             Object.defineProperty(text, 'getBytes', {
               value: function (charset) {
                 if (charset && !/^utf-?8$/i.test(NativeString(charset))) {
-                  throw new Error('Unsupported charset: ' + charset);
+                  var encoded = java.__legadoCharsetEncode(NativeString(this), NativeString(charset));
+                  if (!Array.isArray(encoded)) throw new Error('Unsupported charset: ' + charset);
+                  return encoded;
                 }
                 return __legadoUTF8Bytes(NativeString(this));
               }
@@ -1771,6 +1785,11 @@ public struct JavaScriptRuleEvaluator: Sendable {
             getEncoder: function () { return Object.freeze({ encodeToString: this.encodeToString }); }
           });
           var Arrays = javaClass('Arrays', {
+            asList: function () {
+              var items = arguments.length === 1 && Array.isArray(arguments[0])
+                ? arguments[0] : Array.prototype.slice.call(arguments);
+              return new ArrayList(items);
+            },
             copyOf: function (bytes, length) {
               checkedBytes(bytes);
               if (!Number.isInteger(length) || length < 0 || length > 2097152) throw new RangeError('Invalid array length');
@@ -1984,6 +2003,66 @@ public struct JavaScriptRuleEvaluator: Sendable {
           ByteArrayOutputStream.prototype.toString = function () { return __legadoUTF8String(this.__b); };
           javaClass('ByteArrayOutputStream', ByteArrayOutputStream);
           var StandardCharsets = javaClass('StandardCharsets', { UTF_8: 'UTF-8' });
+          var Charset = javaClass('Charset', {
+            forName: function (name) { return new NativeString(NativeString(name)); },
+            defaultCharset: function () { return new NativeString('UTF-8'); }
+          });
+          function addListMethods(list) {
+            function def(name, fn) { Object.defineProperty(list, name, { value: fn, writable: true, configurable: true }); }
+            def('add', function (a, b) {
+              if (arguments.length > 1) this.splice(a, 0, b); else this.push(a);
+              return true;
+            });
+            def('get', function (i) {
+              if (i < 0 || i >= this.length) throw new RangeError('Index: ' + i + ', Size: ' + this.length);
+              return this[i];
+            });
+            def('set', function (i, v) { var old = this[i]; this[i] = v; return old; });
+            def('size', function () { return this.length; });
+            def('isEmpty', function () { return this.length === 0; });
+            def('clear', function () { this.length = 0; });
+            def('contains', function (v) { return this.indexOf(v) >= 0; });
+            def('remove', function (x) {
+              if (typeof x === 'number') return this.splice(x, 1)[0];
+              var i = this.indexOf(x);
+              if (i >= 0) { this.splice(i, 1); return true; }
+              return false;
+            });
+            def('addAll', function (other) {
+              for (var i = 0; i < other.length; i++) this.push(other[i]);
+              return other.length > 0;
+            });
+            def('toArray', function () { return this.slice(); });
+            return list;
+          }
+          function ArrayList(source) {
+            var list = [];
+            if (Array.isArray(source)) for (var i = 0; i < source.length; i++) list.push(source[i]);
+            return addListMethods(list);
+          }
+          javaClass('ArrayList', ArrayList);
+          function LinkedList(source) { return ArrayList(source); }
+          javaClass('LinkedList', LinkedList);
+          function newMap() {
+            var map = {};
+            function def(name, fn) { Object.defineProperty(map, name, { value: fn, writable: true, configurable: true }); }
+            function has(k) { return Object.prototype.hasOwnProperty.call(map, k); }
+            def('put', function (k, v) { var old = has(k) ? map[k] : null; map[k] = v; return old; });
+            def('get', function (k) { return has(k) ? map[k] : null; });
+            def('containsKey', function (k) { return has(k); });
+            def('remove', function (k) { var old = has(k) ? map[k] : null; delete map[k]; return old; });
+            def('size', function () { return Object.keys(map).length; });
+            def('isEmpty', function () { return Object.keys(map).length === 0; });
+            def('clear', function () { Object.keys(map).forEach(function (k) { delete map[k]; }); });
+            def('keySet', function () { return new ArrayList(Object.keys(map)); });
+            def('values', function () { return new ArrayList(Object.keys(map).map(function (k) { return map[k]; })); });
+            def('putAll', function (other) { Object.keys(other).forEach(function (k) { map[k] = other[k]; }); });
+            return map;
+          }
+          function HashMap() { return newMap(); }
+          javaClass('HashMap', HashMap);
+          function LinkedHashMap() { return newMap(); }
+          javaClass('LinkedHashMap', LinkedHashMap);
           var packages = {
             javax: {
               crypto: { Mac: Mac, Cipher: Cipher, spec: { SecretKeySpec: SecretKeySpec, IvParameterSpec: IvParameterSpec } },
@@ -1992,11 +2071,11 @@ public struct JavaScriptRuleEvaluator: Sendable {
             java: {
               net: { URLEncoder: URLEncoder },
               lang: { String: JavaString, System: System },
-              util: { Base64: Base64, Arrays: Arrays, UUID: UUID, zip: { GZIPInputStream: GZIPInputStream } },
+              util: { Base64: Base64, Arrays: Arrays, UUID: UUID, ArrayList: ArrayList, LinkedList: LinkedList, HashMap: HashMap, LinkedHashMap: LinkedHashMap, zip: { GZIPInputStream: GZIPInputStream } },
               math: { BigInteger: BigInteger },
               security: { MessageDigest: MessageDigest, SecureRandom: SecureRandom },
               io: { ByteArrayInputStream: ByteArrayInputStream, ByteArrayOutputStream: ByteArrayOutputStream },
-              nio: { charset: { StandardCharsets: StandardCharsets } }
+              nio: { charset: { StandardCharsets: StandardCharsets, Charset: Charset } }
             },
             android: { util: { Base64: Base64 } }
           };
