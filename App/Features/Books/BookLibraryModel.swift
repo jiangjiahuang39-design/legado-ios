@@ -56,10 +56,18 @@ enum BookshelfSort: Int, CaseIterable, Identifiable {
     }
 }
 
+enum BookLibraryLoadState {
+    case notStarted
+    case loading
+    case loaded
+    case failed
+}
+
 @MainActor
 final class BookLibraryModel: ObservableObject {
     @Published private(set) var books: [Book] = []
     @Published private(set) var groups: [BookGroup] = []
+    @Published private(set) var loadState: BookLibraryLoadState = .notStarted
     @Published private(set) var errorMessage: String?
     @Published private(set) var updateMessage: String?
     @Published private(set) var isCheckingUpdates = false
