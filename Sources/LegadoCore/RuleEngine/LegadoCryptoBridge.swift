@@ -39,6 +39,7 @@ enum LegadoCryptoBridge {
                 )
                 return output.map { Int(Int8(bitPattern: $0)) }
             } catch {
+                LegadoCryptoFailureStore.shared.set(describe(error))
                 DiagnosticLog.shared.record(
                     .error,
                     category: "JS",
@@ -76,6 +77,20 @@ enum LegadoCryptoBridge {
             }
         }
 
+        let cryptError: @convention(block) () -> String = { LegadoCryptoFailureStore.shared.get() }
+        let randomBytes: @convention(block) (Int) -> [Int] = { count in
+            (0 ..< max(0, min(count, 1_048_576))).map { _ in Int(Int8(bitPattern: UInt8.random(in: 0 ... 255))) }
+        }
+        let randomUUID: @convention(block) () -> String = { UUID().uuidString.lowercased() }
+        let gunzipBlock: @convention(block) (Any?) -> Any? = { data in
+            guard let input = bytes(from: data, encoding: "bytes"),
+                  let output = gunzip(input) else { return nil }
+            return output.map { Int(Int8(bitPattern: $0)) }
+        }
+        java.setObject(cryptError, forKeyedSubscript: "__legadoCryptError" as NSString)
+        java.setObject(randomBytes, forKeyedSubscript: "__legadoRandomBytes" as NSString)
+        java.setObject(randomUUID, forKeyedSubscript: "__legadoRandomUUID" as NSString)
+        java.setObject(gunzipBlock, forKeyedSubscript: "__legadoGunzip" as NSString)
         java.setObject(crypt, forKeyedSubscript: "__legadoCrypt" as NSString)
         java.setObject(digestBlock, forKeyedSubscript: "__legadoDigest" as NSString)
         java.setObject(hmacBlock, forKeyedSubscript: "__legadoHmac" as NSString)
@@ -95,6 +110,33 @@ enum LegadoCryptoBridge {
         java.setObject(cachePut, forKeyedSubscript: "__legadoCachePut" as NSString)
         java.setObject(cacheDelete, forKeyedSubscript: "__legadoCacheDelete" as NSString)
         context.evaluateScript(cacheBootstrap)
+
+        LegadoJsoupBridge.install(on: java, in: context)
+    }
+
+    /// 解 gzip：手动跳过 gzip 头/尾，交给 Foundation 解 raw deflate（NSData.CompressionAlgorithm.zlib 即 raw deflate）。
+    private static func gunzip(_ input: [UInt8]) -> [UInt8]? {
+        guard input.count >= 18, input[0] == 0x1f, input[1] == 0x8b, input[2] == 8 else { return nil }
+        let flags = input[3]
+        var offset = 10
+        if flags & 0x04 != 0 {
+            guard offset + 2 <= input.count else { return nil }
+            offset += 2 + (Int(input[offset]) | (Int(input[offset + 1]) << 8))
+        }
+        if flags & 0x08 != 0 {
+            while offset < input.count, input[offset] != 0 { offset += 1 }
+            offset += 1
+        }
+        if flags & 0x10 != 0 {
+            while offset < input.count, input[offset] != 0 { offset += 1 }
+            offset += 1
+        }
+        if flags & 0x02 != 0 { offset += 2 }
+        let end = input.count - 8
+        guard offset < end else { return nil }
+        let deflated = Data(input[offset ..< end]) as NSData
+        guard let inflated = try? deflated.decompressed(using: .zlib) else { return nil }
+        return Array(inflated as Data)
     }
 
     /// Legado 的全局 `cache` 对象：get / put(key, value, saveTime 秒，0 为不过期) / delete，
@@ -500,4 +542,14 @@ private final class LegadoJSCacheStore: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         if memoryOnly { memory.removeValue(forKey: key) } else { defaults.removeObject(forKey: prefix + key) }
     }
+}
+
+
+/// 记录最近一次加解密失败的原因，供 JS 的 `Cipher.doFinal` 抛错时带上。
+private final class LegadoCryptoFailureStore: @unchecked Sendable {
+    static let shared = LegadoCryptoFailureStore()
+    private let lock = NSLock()
+    private var message = ""
+    func set(_ value: String) { lock.lock(); message = value; lock.unlock() }
+    func get() -> String { lock.lock(); defer { lock.unlock() }; return message }
 }
