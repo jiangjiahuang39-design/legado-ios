@@ -87,6 +87,18 @@ enum LegadoCryptoBridge {
                   let output = gunzip(input) else { return nil }
             return output.map { Int(Int8(bitPattern: $0)) }
         }
+        let charsetDecode: @convention(block) (Any?, String) -> Any? = { data, name in
+            guard let input = bytes(from: data, encoding: "bytes"),
+                  let encoding = stringEncoding(named: name) else { return nil }
+            return String(data: Data(input), encoding: encoding)
+        }
+        let charsetEncode: @convention(block) (String, String) -> Any? = { text, name in
+            guard let encoding = stringEncoding(named: name),
+                  let data = text.data(using: encoding) else { return nil }
+            return data.map { Int(Int8(bitPattern: $0)) }
+        }
+        java.setObject(charsetDecode, forKeyedSubscript: "__legadoCharsetDecode" as NSString)
+        java.setObject(charsetEncode, forKeyedSubscript: "__legadoCharsetEncode" as NSString)
         java.setObject(cryptError, forKeyedSubscript: "__legadoCryptError" as NSString)
         java.setObject(randomBytes, forKeyedSubscript: "__legadoRandomBytes" as NSString)
         java.setObject(randomUUID, forKeyedSubscript: "__legadoRandomUUID" as NSString)
@@ -112,6 +124,13 @@ enum LegadoCryptoBridge {
         context.evaluateScript(cacheBootstrap)
 
         LegadoJsoupBridge.install(on: java, in: context)
+    }
+
+    /// IANA 字符集名（GBK、GB2312、GB18030、Big5、UTF-16 等）→ String.Encoding。
+    private static func stringEncoding(named name: String) -> String.Encoding? {
+        let cfEncoding = CFStringConvertIANACharSetNameToEncoding(name as CFString)
+        guard cfEncoding != kCFStringEncodingInvalidId else { return nil }
+        return String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(cfEncoding))
     }
 
     /// 解 gzip：手动跳过 gzip 头/尾，交给 Foundation 解 raw deflate（NSData.CompressionAlgorithm.zlib 即 raw deflate）。
