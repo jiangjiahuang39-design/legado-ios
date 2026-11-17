@@ -361,6 +361,30 @@ struct BookLibraryRegressionTests {
         #expect(model.books == [changed])
     }
 
+    @Test func staleInitialLoadFailureCannotOverrideNewerSuccessfulLoad() async {
+        let (book, _) = fixture()
+        let repository = SupersededFailingInitialLoadBookRepository(books: [book])
+        let model = BookLibraryModel(
+            repository: repository,
+            groupRepository: InMemoryBookGroupRepository()
+        )
+
+        let earlier = Task { await model.load() }
+        await repository.waitForFirstLoad()
+        #expect(model.loadState == .loading)
+
+        await model.load()
+        #expect(model.loadState == .loaded)
+        #expect(model.books == [book])
+
+        await repository.failFirstLoad()
+        await earlier.value
+
+        #expect(model.loadState == .loaded)
+        #expect(model.books == [book])
+        #expect(model.errorMessage == nil)
+    }
+
     @Test func onlyReadUpdateMeansNoUnreadChaptersIncludingZeroAndOneChapterBooks() async {
         var caughtUp = fixture().0
         caughtUp.bookUrl += "/caught-up"
@@ -861,6 +885,36 @@ private actor FailSecondLoadBookRepository: BookRepository {
     }
 
     func save(_ books: [Book]) {}
+}
+
+
+private actor SupersededFailingInitialLoadBookRepository: BookRepository {
+    private let books: [Book]
+    private var loadCount = 0
+    private var firstLoadStarted = false
+    private var firstLoadContinuation: CheckedContinuation<[Book], Error>?
+
+    init(books: [Book]) { self.books = books }
+
+    func load() async throws -> [Book] {
+        loadCount += 1
+        guard loadCount == 1 else { return books }
+        firstLoadStarted = true
+        return try await withCheckedThrowingContinuation { continuation in
+            firstLoadContinuation = continuation
+        }
+    }
+
+    func save(_ books: [Book]) {}
+
+    func waitForFirstLoad() async {
+        while !firstLoadStarted { await Task.yield() }
+    }
+
+    func failFirstLoad() {
+        firstLoadContinuation?.resume(throwing: CocoaError(.fileReadCorruptFile))
+        firstLoadContinuation = nil
+    }
 }
 
 private actor SuspendedLoadBookRepository: BookRepository {
