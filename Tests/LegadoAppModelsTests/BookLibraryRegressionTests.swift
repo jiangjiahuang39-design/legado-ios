@@ -96,6 +96,25 @@ struct BookLibraryRegressionTests {
         #expect(model.books == [book])
     }
 
+    @Test func failedReloadKeepsLoadedShelfAndBooks() async {
+        let (book, _) = fixture()
+        let repository = FailSecondLoadBookRepository(books: [book])
+        let model = BookLibraryModel(
+            repository: repository,
+            groupRepository: InMemoryBookGroupRepository()
+        )
+
+        await model.load()
+        #expect(model.loadState == .loaded)
+        #expect(model.books == [book])
+
+        await model.load()
+
+        #expect(model.loadState == .loaded)
+        #expect(model.books == [book])
+        #expect(model.errorMessage != nil)
+    }
+
     @Test func readerSettingSavesOnlyChangedFieldAndKeepsCurrentMetadataAndProgress() async {
         let (snapshot, chapters) = fixture()
         var current = snapshot
@@ -819,6 +838,23 @@ private actor FailOnceLoadBookRepository: BookRepository {
     func load() throws -> [Book] {
         if shouldFail {
             shouldFail = false
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return books
+    }
+
+    func save(_ books: [Book]) {}
+}
+
+private actor FailSecondLoadBookRepository: BookRepository {
+    private let books: [Book]
+    private var loadCount = 0
+
+    init(books: [Book]) { self.books = books }
+
+    func load() throws -> [Book] {
+        loadCount += 1
+        if loadCount == 2 {
             throw CocoaError(.fileReadCorruptFile)
         }
         return books
