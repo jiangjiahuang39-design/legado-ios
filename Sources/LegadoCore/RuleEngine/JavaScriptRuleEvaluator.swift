@@ -486,7 +486,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
 
         if let library = executionContext.source?.jsLib?.trimmingCharacters(in: .whitespacesAndNewlines),
            !library.isEmpty {
-            guard library.utf8.count <= maximumScriptLength else {
+            guard library.utf8.count <= max(maximumScriptLength, 4 * 1_024 * 1_024) else {
                 throw RuleEngineError.resourceLimit(rule: library, detail: "书源 jsLib 超过长度上限")
             }
             try rejectUnboundedExecution(library)
@@ -2095,6 +2095,111 @@ public struct JavaScriptRuleEvaluator: Sendable {
           ByteArrayOutputStream.prototype.toString = function () { return __legadoUTF8String(this.__b); };
           javaClass('ByteArrayOutputStream', ByteArrayOutputStream);
           var StandardCharsets = javaClass('StandardCharsets', { UTF_8: 'UTF-8' });
+          var TextUtils = javaClass('TextUtils', {
+            isEmpty: function (value) { return value === null || value === undefined || NativeString(value).length === 0; },
+            equals: function (a, b) { return (a === null || a === undefined) ? (b === null || b === undefined) : NativeString(a) === NativeString(b); },
+            join: function (delimiter, items) {
+              var out = [];
+              for (var i = 0; i < items.length; i++) out.push(NativeString(items[i]));
+              return out.join(NativeString(delimiter));
+            },
+            isDigitsOnly: function (value) { return /^[0-9]*$/.test(NativeString(value)); }
+          });
+          function GZIPOutputStream(target) {
+            if (!(this instanceof GZIPOutputStream)) return new GZIPOutputStream(target);
+            this.__o = target;
+            this.__b = [];
+            this.__closed = false;
+          }
+          GZIPOutputStream.prototype.write = function (value, offset, length) {
+            if (Array.isArray(value)) {
+              offset = offset || 0;
+              length = length === undefined ? value.length - offset : length;
+              for (var i = 0; i < length; i++) this.__b.push(value[offset + i]);
+            } else {
+              var b = value & 255;
+              this.__b.push(b > 127 ? b - 256 : b);
+            }
+          };
+          GZIPOutputStream.prototype.finish = function () {
+            if (this.__closed) return;
+            this.__closed = true;
+            var zipped = java.__legadoGzip(this.__b);
+            if (!Array.isArray(zipped)) throw new Error('GZIP encode failed');
+            this.__o.write(zipped, 0, zipped.length);
+          };
+          GZIPOutputStream.prototype.flush = function () {};
+          GZIPOutputStream.prototype.close = function () { this.finish(); };
+          javaClass('GZIPOutputStream', GZIPOutputStream);
+          function openHttpConnection(urlText) {
+            var method = 'GET', headers = {}, output = null, connectTimeout = 15000, readTimeout = 20000, response = null;
+            function execute() {
+              if (response !== null) return response;
+              var payload = output ? output.toByteArray() : [];
+              var r = java.__legadoHttp(method, urlText, headers, payload, connectTimeout + readTimeout);
+              if (!r) throw new Error('IOException: ' + java.__legadoCryptError());
+              response = r;
+              return r;
+            }
+            function headerValue(name) {
+              var wanted = String(name).toLowerCase();
+              for (var k in response.headers) if (k.toLowerCase() === wanted) return response.headers[k];
+              return null;
+            }
+            return {
+              setRequestMethod: function (m) { method = String(m).toUpperCase(); },
+              getRequestMethod: function () { return method; },
+              setDoOutput: function () {}, setDoInput: function () {}, setUseCaches: function () {},
+              setInstanceFollowRedirects: function () {}, connect: function () {}, disconnect: function () {},
+              setConnectTimeout: function (ms) { connectTimeout = Number(ms) || connectTimeout; },
+              setReadTimeout: function (ms) { readTimeout = Number(ms) || readTimeout; },
+              setRequestProperty: function (k, v) { headers[String(k)] = String(v); },
+              addRequestProperty: function (k, v) {
+                k = String(k);
+                headers[k] = headers[k] === undefined ? String(v) : headers[k] + ', ' + String(v);
+              },
+              getOutputStream: function () { if (!output) output = new ByteArrayOutputStream(); return output; },
+              getResponseCode: function () { return execute().code; },
+              getResponseMessage: function () { execute(); return ''; },
+              getHeaderField: function (name) { execute(); return headerValue(name); },
+              getContentType: function () { execute(); return headerValue('Content-Type'); },
+              getContentLength: function () { return execute().body.length; },
+              getInputStream: function () {
+                var r = execute();
+                if (r.code >= 400) throw new Error('IOException: Server returned HTTP response code: ' + r.code + ' for URL: ' + urlText);
+                return new ByteArrayInputStream(r.body);
+              },
+              getErrorStream: function () {
+                var r = execute();
+                return r.code >= 400 ? new ByteArrayInputStream(r.body) : null;
+              }
+            };
+          }
+          function URL(spec) {
+            if (!(this instanceof URL)) return new URL(spec);
+            var text = NativeString(spec);
+            var m = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/(?:([^@\/?#]*)@)?([^\/?#:]*)(?::(\d+))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/.exec(text);
+            if (!m) throw new Error('MalformedURLException: ' + text);
+            this.__t = text;
+            this.__m = { protocol: m[1].toLowerCase(), user: m[2] === undefined ? null : m[2], host: m[3],
+              port: m[4] === undefined ? -1 : Number(m[4]), path: m[5] || '', query: m[6] === undefined ? null : m[6],
+              ref: m[7] === undefined ? null : m[7] };
+          }
+          URL.prototype.getProtocol = function () { return this.__m.protocol; };
+          URL.prototype.getHost = function () { return this.__m.host; };
+          URL.prototype.getPort = function () { return this.__m.port; };
+          URL.prototype.getDefaultPort = function () { return this.__m.protocol === 'https' ? 443 : (this.__m.protocol === 'http' ? 80 : -1); };
+          URL.prototype.getPath = function () { return this.__m.path; };
+          URL.prototype.getQuery = function () { return this.__m.query; };
+          URL.prototype.getRef = function () { return this.__m.ref; };
+          URL.prototype.getUserInfo = function () { return this.__m.user; };
+          URL.prototype.getAuthority = function () { return this.__m.host + (this.__m.port >= 0 ? ':' + this.__m.port : ''); };
+          URL.prototype.getFile = function () { return this.__m.path + (this.__m.query === null ? '' : '?' + this.__m.query); };
+          URL.prototype.toString = function () { return this.__t; };
+          URL.prototype.toExternalForm = URL.prototype.toString;
+          URL.prototype.openConnection = function () { return openHttpConnection(this.__t); };
+          URL.prototype.openStream = function () { return openHttpConnection(this.__t).getInputStream(); };
+          javaClass('URL', URL);
           var Thread = javaClass('Thread', {
             sleep: function (milliseconds) { java.sleep(milliseconds); }
           });
@@ -2205,15 +2310,15 @@ public struct JavaScriptRuleEvaluator: Sendable {
               xml: { bind: { DatatypeConverter: DatatypeConverter } }
             },
             java: {
-              net: { URLEncoder: URLEncoder },
+              net: { URLEncoder: URLEncoder, URL: URL },
               lang: { String: JavaString, System: System, Thread: Thread, StringBuilder: StringBuilder },
-              util: { Base64: Base64, Arrays: Arrays, UUID: UUID, ArrayList: ArrayList, LinkedList: LinkedList, HashMap: HashMap, LinkedHashMap: LinkedHashMap, zip: { GZIPInputStream: GZIPInputStream } },
+              util: { Base64: Base64, Arrays: Arrays, UUID: UUID, ArrayList: ArrayList, LinkedList: LinkedList, HashMap: HashMap, LinkedHashMap: LinkedHashMap, zip: { GZIPInputStream: GZIPInputStream, GZIPOutputStream: GZIPOutputStream } },
               math: { BigInteger: BigInteger },
               security: { MessageDigest: MessageDigest, SecureRandom: SecureRandom },
               io: { ByteArrayInputStream: ByteArrayInputStream, ByteArrayOutputStream: ByteArrayOutputStream, InputStreamReader: InputStreamReader, BufferedReader: BufferedReader },
               nio: { charset: { StandardCharsets: StandardCharsets, Charset: Charset } }
             },
-            android: { util: { Base64: Base64 } }
+            android: { util: { Base64: Base64 }, text: { TextUtils: TextUtils } }
           };
           Object.freeze(packages.javax.crypto.spec);
           Object.freeze(packages.javax.crypto);
@@ -2231,6 +2336,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
           Object.freeze(packages.java.util);
           Object.freeze(packages.java);
           Object.freeze(packages.android.util);
+          Object.freeze(packages.android.text);
           Object.freeze(packages.android);
           global.Packages = Object.freeze(packages);
           global.JavaImporter = Object.freeze(function () {
