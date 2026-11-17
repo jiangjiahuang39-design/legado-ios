@@ -226,6 +226,10 @@ private extension KeyedDecodingContainer {
         if let value = try? decode(T.self, forKey: key) {
             return value
         }
+        // 部分书源把没有的规则写成 `[]`（如 "ruleExplore": []），按“无规则”处理。
+        if (try? decode([JSONValue].self, forKey: key)) != nil { return nil }
+        // 是对象但字段类型不对：直接抛出真正的解码错误，而不是 “Expected String”。
+        if case .object? = try? decode(JSONValue.self, forKey: key) { return try decode(T.self, forKey: key) }
         let json = try decode(String.self, forKey: key)
         guard !json.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let data = json.data(using: .utf8) else {
