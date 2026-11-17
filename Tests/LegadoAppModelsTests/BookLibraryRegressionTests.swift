@@ -17,6 +17,48 @@ struct BookLibraryRegressionTests {
         return (book, chapters)
     }
 
+    @Test func initialShelfLoadMarksCoreDataAsLoaded() async {
+        let (book, _) = fixture()
+        let model = BookLibraryModel(
+            repository: InMemoryBookRepository(books: [book]),
+            groupRepository: InMemoryBookGroupRepository()
+        )
+
+        #expect(model.loadState == .notStarted)
+        await model.load()
+
+        #expect(model.loadState == .loaded)
+        #expect(model.books == [book])
+        #expect(model.groups.contains { $0.groupId == BookGroup.idAll })
+    }
+
+    @Test func initialBookReadFailureMarksLoadAsFailed() async {
+        let model = BookLibraryModel(
+            repository: FailingLoadBookRepository(),
+            groupRepository: InMemoryBookGroupRepository()
+        )
+
+        await model.load()
+
+        #expect(model.loadState == .failed)
+        #expect(model.books.isEmpty)
+        #expect(model.errorMessage != nil)
+    }
+
+    @Test func initialGroupReadFailureMarksLoadAsFailed() async {
+        let (book, _) = fixture()
+        let model = BookLibraryModel(
+            repository: InMemoryBookRepository(books: [book]),
+            groupRepository: FailingLoadGroupRepository()
+        )
+
+        await model.load()
+
+        #expect(model.loadState == .failed)
+        #expect(model.books.isEmpty)
+        #expect(model.errorMessage != nil)
+    }
+
     @Test func readerSettingSavesOnlyChangedFieldAndKeepsCurrentMetadataAndProgress() async {
         let (snapshot, chapters) = fixture()
         var current = snapshot
@@ -724,6 +766,16 @@ private actor FailingBookRepository: BookRepository {
     init(books: [Book]) { self.books = books }
     func load() -> [Book] { books }
     func save(_ books: [Book]) throws { throw CocoaError(.fileWriteOutOfSpace) }
+}
+
+private actor FailingLoadBookRepository: BookRepository {
+    func load() throws -> [Book] { throw CocoaError(.fileReadCorruptFile) }
+    func save(_ books: [Book]) {}
+}
+
+private actor FailingLoadGroupRepository: BookGroupRepository {
+    func load() throws -> [BookGroup] { throw CocoaError(.fileReadCorruptFile) }
+    func save(_ groups: [BookGroup]) {}
 }
 
 private actor FailOnceBookRepository: BookRepository {
