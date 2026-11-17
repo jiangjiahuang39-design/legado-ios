@@ -56,7 +56,7 @@ enum BookshelfSort: Int, CaseIterable, Identifiable {
     }
 }
 
-enum BookLibraryLoadState {
+enum BookLibraryLoadState: Equatable {
     case notStarted
     case loading
     case loaded
@@ -154,27 +154,51 @@ final class BookLibraryModel: ObservableObject {
         let generation = loadGeneration
         let booksGeneration = bookSaveGeneration
         let groupsGeneration = groupSaveGeneration
+        let wasLoaded = loadState == .loaded
+        if !wasLoaded { loadState = .loading }
+
         await waitForSourceSwitch()
         _ = await bookSaveTask?.value
         _ = await groupSaveTask?.value
-        guard generation == loadGeneration, !Task.isCancelled else { return }
+        guard generation == loadGeneration else { return }
+        guard !Task.isCancelled else {
+            if !wasLoaded { loadState = .notStarted }
+            return
+        }
+
         do {
             async let storedBooks = repository.load()
             async let storedGroups = groupRepository.load()
             let loadedBooks = try await storedBooks
             let loadedGroups = try await storedGroups
-            guard generation == loadGeneration, !Task.isCancelled else { return }
+            guard generation == loadGeneration else { return }
+            guard !Task.isCancelled else {
+                if !wasLoaded { loadState = .notStarted }
+                return
+            }
+
             if booksGeneration == bookSaveGeneration, sourceSwitchSaveTask == nil {
                 books = loadedBooks
                 persistedBooks = loadedBooks
             }
+
+            var defaultGroupsToPersist: [BookGroup]?
             if groupsGeneration == groupSaveGeneration {
                 groups = loadedGroups
                 persistedGroups = loadedGroups
                 if groups.isEmpty {
-                    await persistGroups([.init(groupId: BookGroup.idAll, groupName: "全部", order: 0)])
+                    let defaultGroups = [BookGroup(groupId: BookGroup.idAll, groupName: "全部", order: 0)]
+                    groups = defaultGroups
+                    defaultGroupsToPersist = defaultGroups
                 }
             }
+
+            // The shelf's core data is ready. Local EPUB cover restoration is follow-up work.
+            if !wasLoaded { loadState = .loaded }
+            if let defaultGroupsToPersist {
+                _ = await persistGroups(defaultGroupsToPersist)
+            }
+
             for book in books where book.origin == "local" && book.coverUrl?.isEmpty != false {
                 guard !Task.isCancelled, let url = URL(string: book.bookUrl),
                       url.isFileURL, url.pathExtension.lowercased() == "epub" else { continue }
@@ -185,9 +209,15 @@ final class BookLibraryModel: ObservableObject {
                 }
             }
         } catch {
-            if generation == loadGeneration, booksGeneration == bookSaveGeneration, groupsGeneration == groupSaveGeneration {
+            guard generation == loadGeneration else { return }
+            if Task.isCancelled || error is CancellationError {
+                if !wasLoaded { loadState = .notStarted }
+                return
+            }
+            if booksGeneration == bookSaveGeneration, groupsGeneration == groupSaveGeneration {
                 errorMessage = error.localizedDescription
             }
+            if !wasLoaded { loadState = .failed }
         }
     }
 
