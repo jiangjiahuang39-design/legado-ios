@@ -187,39 +187,81 @@ private struct BookshelfView: View {
                         bookshelfGroups.padding(.bottom, 24)
                     }
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        if displayedBooks.isEmpty {
-                            EmptyBookshelfHero { showsLocalImporter = true }
-                                .padding(.top, min(80, max(24, geometry.size.height * 0.075)))
-                        } else {
-                            if let book = recentBook {
-                                VStack(alignment: .leading, spacing: 12) {
-                                    Text("继续阅读")
-                                        .font(.subheadline.weight(.medium))
-                                        .foregroundStyle(.secondary)
-                                    NavigationLink {
-                                        BookshelfBookDestination(book: book, source: sources.sources.first { $0.bookSourceUrl == book.origin })
-                                    } label: {
-                                        ContinueReadingCard(book: book)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel("继续阅读，\(book.name)，\(BookReadingPresentation.position(book))")
-                                    .accessibilityIdentifier("bookshelf.continue")
-                                }
-                                .padding(.bottom, 30)
+                        switch library.loadState {
+                        case .notStarted, .loading:
+                            VStack(spacing: 12) {
+                                ProgressView()
+                                Text("正在准备书架…")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
                             }
-                            bookshelfSummary
-                            if bookshelfLayout.hasPrefix("grid") {
-                                LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 24) {
-                                    ForEach(displayedBooks) { book in
-                                        BookshelfBookLink(book: book, compact: false, grid: true)
-                                    }
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, min(80, max(24, geometry.size.height * 0.075)))
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel("正在准备书架")
+
+                        case .failed:
+                            VStack(spacing: 14) {
+                                Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
+                                    .font(.system(size: 30, weight: .light))
+                                    .foregroundStyle(.secondary)
+                                Text("书架加载失败")
+                                    .font(.headline)
+                                Text("暂时无法读取书架数据，请检查后重试。")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                                Button {
+                                    library.clearError()
+                                    Task { await library.load() }
+                                } label: {
+                                    Text("重新加载")
+                                        .font(.subheadline.weight(.semibold))
+                                        .padding(.horizontal, 22)
+                                        .padding(.vertical, 10)
                                 }
+                                .buttonStyle(.borderedProminent)
+                                .accessibilityIdentifier("bookshelf.retryLoad")
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.horizontal, 24)
+                            .padding(.top, min(64, max(24, geometry.size.height * 0.06)))
+
+                        case .loaded:
+                            if displayedBooks.isEmpty {
+                                EmptyBookshelfHero { showsLocalImporter = true }
+                                    .padding(.top, min(80, max(24, geometry.size.height * 0.075)))
                             } else {
-                                ForEach(displayedBooks) { book in
-                                    BookshelfBookLink(book: book, compact: bookshelfLayout == "compact", grid: false)
-                                    if book.id != displayedBooks.last?.id {
-                                        Rectangle().fill(ReadingTheme.separator).frame(height: 0.5)
-                                            .padding(.leading, bookshelfLayout == "compact" ? 54 : 66)
+                                if let book = recentBook {
+                                    VStack(alignment: .leading, spacing: 12) {
+                                        Text("继续阅读")
+                                            .font(.subheadline.weight(.medium))
+                                            .foregroundStyle(.secondary)
+                                        NavigationLink {
+                                            BookshelfBookDestination(book: book, source: sources.sources.first { $0.bookSourceUrl == book.origin })
+                                        } label: {
+                                            ContinueReadingCard(book: book)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .accessibilityLabel("继续阅读，\(book.name)，\(BookReadingPresentation.position(book))")
+                                        .accessibilityIdentifier("bookshelf.continue")
+                                    }
+                                    .padding(.bottom, 30)
+                                }
+                                bookshelfSummary
+                                if bookshelfLayout.hasPrefix("grid") {
+                                    LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 24) {
+                                        ForEach(displayedBooks) { book in
+                                            BookshelfBookLink(book: book, compact: false, grid: true)
+                                        }
+                                    }
+                                } else {
+                                    ForEach(displayedBooks) { book in
+                                        BookshelfBookLink(book: book, compact: bookshelfLayout == "compact", grid: false)
+                                        if book.id != displayedBooks.last?.id {
+                                            Rectangle().fill(ReadingTheme.separator).frame(height: 0.5)
+                                                .padding(.leading, bookshelfLayout == "compact" ? 54 : 66)
+                                        }
                                     }
                                 }
                             }
@@ -259,7 +301,7 @@ private struct BookshelfView: View {
             BookOrderView(groupID: selectedGroup.id).environmentObject(library)
         }
         .alert("书架操作失败", isPresented: Binding(
-            get: { library.errorMessage != nil },
+            get: { library.errorMessage != nil && library.loadState != .failed },
             set: { if !$0 { library.clearError() } }
         )) {
             Button("好") { library.clearError() }
