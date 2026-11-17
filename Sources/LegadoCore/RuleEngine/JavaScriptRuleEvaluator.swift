@@ -268,7 +268,6 @@ private final class JavaScriptRedirectBlocker: NSObject, URLSessionTaskDelegate,
 
 public struct JavaScriptRuleEvaluator: Sendable {
     public var maximumScriptLength: Int
-    public var maximumJsLibLength: Int
     public var maximumResultLength: Int
     private let networkLoader: any JavaScriptNetworkLoading
     private let urlBuilder: LegadoURLBuilder
@@ -282,11 +281,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
 
     public init(
         maximumScriptLength: Int = 64 * 1_024,
-maximumJsLibLength: Int = 2 * 1_024 * 1_024,
-maximumResultLength: Int = 2 * 1_024 * 1_024,
-self.maximumScriptLength = maximumScriptLength
-self.maximumJsLibLength = maximumJsLibLength
-self.maximumResultLength = maximumResultLength
+        maximumResultLength: Int = 2 * 1_024 * 1_024,
         networkLoader: any JavaScriptNetworkLoading = SynchronousJavaScriptNetworkLoader(),
         urlBuilder: LegadoURLBuilder = .init(),
         rssVariableStore: RSSVariableStore = .shared
@@ -491,8 +486,8 @@ self.maximumResultLength = maximumResultLength
 
         if let library = executionContext.source?.jsLib?.trimmingCharacters(in: .whitespacesAndNewlines),
            !library.isEmpty {
-            guard library.utf8.count <= maximumJsLibLength else {
-    throw RuleEngineError.resourceLimit(rule: library, detail: "书源 jsLib 超过长度上限")
+            guard library.utf8.count <= maximumScriptLength else {
+                throw RuleEngineError.resourceLimit(rule: library, detail: "书源 jsLib 超过长度上限")
             }
             try rejectUnboundedExecution(library)
             context.evaluateScript(library)
@@ -1201,13 +1196,12 @@ self.maximumResultLength = maximumResultLength
                     bodyContext.baseURL = response.finalURL.absoluteString
                     bodyContext.rssArticle = prepared.rssArticle
                     let transformed = try JavaScriptRuleEvaluator(
-    maximumScriptLength: maximumScriptLength,
-    maximumJsLibLength: maximumJsLibLength,
-    maximumResultLength: maximumResultLength,
-    networkLoader: networkLoader,
-    urlBuilder: requestBuilder,
-    rssVariableStore: rssVariableStore
-).evaluate(
+                        maximumScriptLength: maximumScriptLength,
+                        maximumResultLength: maximumResultLength,
+                        networkLoader: networkLoader,
+                        urlBuilder: requestBuilder,
+                        rssVariableStore: rssVariableStore
+                    ).evaluate(
                         script: bodyScript,
                         result: .string(response.decodedText),
                         executionContext: bodyContext
