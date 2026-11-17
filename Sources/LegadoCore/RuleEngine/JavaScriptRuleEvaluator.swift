@@ -268,6 +268,7 @@ private final class JavaScriptRedirectBlocker: NSObject, URLSessionTaskDelegate,
 
 public struct JavaScriptRuleEvaluator: Sendable {
     public var maximumScriptLength: Int
+    public var maximumJsLibLength: Int
     public var maximumResultLength: Int
     private let networkLoader: any JavaScriptNetworkLoading
     private let urlBuilder: LegadoURLBuilder
@@ -281,7 +282,11 @@ public struct JavaScriptRuleEvaluator: Sendable {
 
     public init(
         maximumScriptLength: Int = 64 * 1_024,
-        maximumResultLength: Int = 2 * 1_024 * 1_024,
+maximumJsLibLength: Int = 2 * 1_024 * 1_024,
+maximumResultLength: Int = 2 * 1_024 * 1_024,
+self.maximumScriptLength = maximumScriptLength
+self.maximumJsLibLength = maximumJsLibLength
+self.maximumResultLength = maximumResultLength
         networkLoader: any JavaScriptNetworkLoading = SynchronousJavaScriptNetworkLoader(),
         urlBuilder: LegadoURLBuilder = .init(),
         rssVariableStore: RSSVariableStore = .shared
@@ -486,8 +491,8 @@ public struct JavaScriptRuleEvaluator: Sendable {
 
         if let library = executionContext.source?.jsLib?.trimmingCharacters(in: .whitespacesAndNewlines),
            !library.isEmpty {
-            guard library.utf8.count <= maximumScriptLength else {
-                throw RuleEngineError.resourceLimit(rule: library, detail: "书源 jsLib 超过长度上限")
+            guard library.utf8.count <= maximumJsLibLength else {
+    throw RuleEngineError.resourceLimit(rule: library, detail: "书源 jsLib 超过长度上限")
             }
             try rejectUnboundedExecution(library)
             context.evaluateScript(library)
@@ -912,12 +917,19 @@ public struct JavaScriptRuleEvaluator: Sendable {
         java?.setObject(timeFormat, forKeyedSubscript: "timeFormat" as NSString)
         java?.setObject(randomUUID, forKeyedSubscript: "randomUUID" as NSString)
         java?.setObject(deviceID, forKeyedSubscript: "androidId" as NSString)
+        java?.setObject(deviceID, forKeyedSubscript: "deviceID" as NSString)
+        let sleep: @convention(block) (Any?) -> Void = { value in
+            let milliseconds = max(0, min(Self.number(value) ?? 0, 10_000))
+            Thread.sleep(forTimeInterval: milliseconds / 1000)
+        }
+        java?.setObject(sleep, forKeyedSubscript: "sleep" as NSString)
         java?.setObject(getTag, forKeyedSubscript: "getTag" as NSString)
         java?.setObject(logValue, forKeyedSubscript: "log" as NSString)
         java?.setObject(logValue, forKeyedSubscript: "logType" as NSString)
         java?.setObject(logValue, forKeyedSubscript: "toast" as NSString)
         java?.setObject(logValue, forKeyedSubscript: "longToast" as NSString)
         java?.setObject(urlEncode, forKeyedSubscript: "encodeURI" as NSString)
+        java?.setObject(urlEncode, forKeyedSubscript: "urlEncode" as NSString)
         java?.setObject(getCookieHeader, forKeyedSubscript: "getCookieHeader" as NSString)
         java?.setObject(getCookieValue, forKeyedSubscript: "__getCookieValue" as NSString)
         java?.setObject(setCookie, forKeyedSubscript: "setCookie" as NSString)
@@ -954,6 +966,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
                 return responseOf(java.__directRequest('GET', target, null, headers || {}, timeout));
               };
               function extractRule(rule, content, mode, isUrl, unescape) {
+                if ((content === null || content === undefined) && java.__hasContent) content = java.__content;
                 var fragment = content && typeof content === 'object' && typeof content.__legadoHTML === 'string';
                 var response = java.__getRule(String(rule == null ? '' : rule), fragment ? content.__legadoHTML : content == null ? src : content,
                   mode, Boolean(isUrl), Boolean(fragment), unescape !== false);
@@ -991,6 +1004,62 @@ public struct JavaScriptRuleEvaluator: Sendable {
               java.getStringList = function (rule, content, isUrl) { return listOf(extractRule(rule, content, 'strings', isUrl)); };
               java.getElement = function (rule, content) { return elementOf(extractRule(rule, content, 'element', false)); };
               java.getElements = function (rule, content) { return elementOf(extractRule(rule, content, 'elements', false)); };
+              java.setContent = function (content, baseUrl) {
+                java.__hasContent = true;
+                java.__content = content;
+                return java;
+              };
+              java.toNumChapter = function (title) {
+                if (title === null || title === undefined) return null;
+                var text = String(title);
+                var digits = { '零': 0, '〇': 0, '一': 1, '壹': 1, '二': 2, '贰': 2, '两': 2, '三': 3, '叁': 3, '四': 4, '肆': 4,
+                               '五': 5, '伍': 5, '六': 6, '陆': 6, '七': 7, '柒': 7, '八': 8, '捌': 8, '九': 9, '玖': 9 };
+                var units = { '十': 10, '拾': 10, '百': 100, '佰': 100, '千': 1000, '仟': 1000 };
+                function toInt(str) {
+                  if (/^\\d+$/.test(str)) return parseInt(str, 10);
+                  var hasUnit = /[十拾百佰千仟万]/.test(str);
+                  if (!hasUnit) {
+                    var joined = '';
+                    for (var i = 0; i < str.length; i++) {
+                      if (!(str.charAt(i) in digits)) return null;
+                      joined += digits[str.charAt(i)];
+                    }
+                    return parseInt(joined, 10);
+                  }
+                  var total = 0, section = 0, number = 0;
+                  for (var j = 0; j < str.length; j++) {
+                    var ch = str.charAt(j);
+                    if (ch in digits) { number = digits[ch]; }
+                    else if (ch in units) { section += (number === 0 ? 1 : number) * units[ch]; number = 0; }
+                    else if (ch === '万') { total += (section + number) * 10000; section = 0; number = 0; }
+                    else return null;
+                  }
+                  return total + section + number;
+                }
+                return text.replace(/(第)([\\d零〇一二两三四五六七八九十百千万壹贰叁肆伍陆柒捌玖拾佰仟]+)([章节回集卷部篇])/, function (all, head, num, tail) {
+                  var value = toInt(num);
+                  return value === null ? all : head + value + tail;
+                });
+              };
+              java.toURL = function (url, baseUrl) {
+                var pattern = /^([a-zA-Z][a-zA-Z0-9+.\\-]*:)\\/\\/([^\\/?#:]*)(?::(\\d+))?([^?#]*)(\\?[^#]*)?(#.*)?$/;
+                var text = String(url);
+                var m = pattern.exec(text);
+                if (!m && baseUrl) {
+                  var base = java.toURL(String(baseUrl));
+                  text = text.charAt(0) === '/' ? base.origin + text : base.origin + base.pathname.replace(/[^\\/]*$/, '') + text;
+                  m = pattern.exec(text);
+                }
+                if (!m) throw new Error('Invalid URL: ' + text);
+                var port = m[3] || '', host = m[2] + (port ? ':' + port : '');
+                var result = {
+                  href: text, protocol: m[1], origin: m[1] + '//' + host, host: host, hostname: m[2], port: port,
+                  pathname: m[4] || '/', path: (m[4] || '/') + (m[5] || ''), search: m[5] || '',
+                  query: (m[5] || '').replace(/^\\?/, ''), hash: m[6] || ''
+                };
+                Object.defineProperty(result, 'toString', { value: function () { return text; } });
+                return result;
+              };
               java.head = function (url, headers, timeout) {
                 return responseOf(java.__directRequest('HEAD', String(url), null, headers || {}, timeout));
               };
@@ -1132,12 +1201,13 @@ public struct JavaScriptRuleEvaluator: Sendable {
                     bodyContext.baseURL = response.finalURL.absoluteString
                     bodyContext.rssArticle = prepared.rssArticle
                     let transformed = try JavaScriptRuleEvaluator(
-                        maximumScriptLength: maximumScriptLength,
-                        maximumResultLength: maximumResultLength,
-                        networkLoader: networkLoader,
-                        urlBuilder: requestBuilder,
-                        rssVariableStore: rssVariableStore
-                    ).evaluate(
+    maximumScriptLength: maximumScriptLength,
+    maximumJsLibLength: maximumJsLibLength,
+    maximumResultLength: maximumResultLength,
+    networkLoader: networkLoader,
+    urlBuilder: requestBuilder,
+    rssVariableStore: rssVariableStore
+).evaluate(
                         script: bodyScript,
                         result: .string(response.decodedText),
                         executionContext: bodyContext
@@ -1203,6 +1273,22 @@ public struct JavaScriptRuleEvaluator: Sendable {
             }
             return headers
         }
+        let getVariable: @convention(block) () -> String = {
+            BookSourceRuntimeStore.shared.get(sourceID: sourceID, key: "variable")
+        }
+        let setVariable: @convention(block) (Any?) -> Void = {
+            BookSourceRuntimeStore.shared.put(sourceID: sourceID, key: "variable", value: Self.stringify($0))
+        }
+        object?.setObject(getVariable, forKeyedSubscript: "getVariable" as NSString)
+        object?.setObject(setVariable, forKeyedSubscript: "setVariable" as NSString)
+        object?.setObject(source?.bookSourceComment ?? "", forKeyedSubscript: "bookSourceComment" as NSString)
+        object?.setObject(source?.loginUi ?? "", forKeyedSubscript: "loginUi" as NSString)
+        object?.setObject(source?.loginCheckJs ?? "", forKeyedSubscript: "loginCheckJs" as NSString)
+        object?.setObject(source?.coverDecodeJs ?? "", forKeyedSubscript: "coverDecodeJs" as NSString)
+        object?.setObject(source?.variableComment ?? "", forKeyedSubscript: "variableComment" as NSString)
+        object?.setObject(source?.concurrentRate ?? "", forKeyedSubscript: "concurrentRate" as NSString)
+        object?.setObject(source?.exploreScreen ?? "", forKeyedSubscript: "exploreScreen" as NSString)
+        object?.setObject(source?.jsLib ?? "", forKeyedSubscript: "jsLib" as NSString)
         object?.setObject(get, forKeyedSubscript: "get" as NSString)
         object?.setObject(put, forKeyedSubscript: "put" as NSString)
         object?.setObject(getLoginHeader, forKeyedSubscript: "getLoginHeader" as NSString)
@@ -1228,6 +1314,18 @@ public struct JavaScriptRuleEvaluator: Sendable {
         context.evaluateScript("""
             (function () {
               source.getKey = function () { return source.bookSourceUrl; };
+              source.key = source.bookSourceUrl;
+              source.tag = source.bookSourceName;
+              source.getLoginHeaderMap = function () {
+                var raw = source.getLoginHeader();
+                if (raw === null || raw === undefined || raw === '') return null;
+                var map;
+                try { map = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return null; }
+                if (map === null || typeof map !== 'object') return null;
+                Object.defineProperty(map, 'get', { value: function (key) { return map[String(key)]; } });
+                Object.defineProperty(map, 'put', { value: function (key, value) { map[String(key)] = value; return value; } });
+                return map;
+              };
               source.getTag = function () { return source.bookSourceName; };
               source.getLoginInfoMap = function () {
                 var map = source.__getLoginInfoMap() || {};
@@ -2003,6 +2101,50 @@ public struct JavaScriptRuleEvaluator: Sendable {
           ByteArrayOutputStream.prototype.toString = function () { return __legadoUTF8String(this.__b); };
           javaClass('ByteArrayOutputStream', ByteArrayOutputStream);
           var StandardCharsets = javaClass('StandardCharsets', { UTF_8: 'UTF-8' });
+          var Thread = javaClass('Thread', {
+            sleep: function (milliseconds) { java.sleep(milliseconds); }
+          });
+          function StringBuilder(initial) {
+            if (!(this instanceof StringBuilder)) return new StringBuilder(initial);
+            this.__s = initial === undefined || initial === null || typeof initial === 'number' ? '' : NativeString(initial);
+          }
+          (function () {
+            var proto = StringBuilder.prototype;
+            proto.append = function (value) { this.__s += value === null || value === undefined ? 'null' : NativeString(value); return this; };
+            proto.toString = function () { return this.__s; };
+            proto.length = function () { return this.__s.length; };
+            proto.insert = function (index, value) { this.__s = this.__s.slice(0, index) + NativeString(value) + this.__s.slice(index); return this; };
+            proto.reverse = function () { this.__s = this.__s.split('').reverse().join(''); return this; };
+            proto.setLength = function (length) { this.__s = this.__s.slice(0, length); };
+            proto.charAt = function (index) { return this.__s.charAt(index); };
+            proto.indexOf = function (text) { return this.__s.indexOf(NativeString(text)); };
+            proto['delete'] = function (start, end) { this.__s = this.__s.slice(0, start) + this.__s.slice(end); return this; };
+            proto.deleteCharAt = function (index) { this.__s = this.__s.slice(0, index) + this.__s.slice(index + 1); return this; };
+            proto.isEmpty = function () { return this.__s.length === 0; };
+          })();
+          javaClass('StringBuilder', StringBuilder);
+          function InputStreamReader(stream, charset) {
+            if (!(this instanceof InputStreamReader)) return new InputStreamReader(stream, charset);
+            if (!stream || !Array.isArray(stream.__b)) throw new TypeError('Unsupported InputStream');
+            var rest = stream.__b.slice(stream.__p);
+            stream.__p = stream.__b.length;
+            this.__text = NativeString(new JavaString(rest, charset || 'UTF-8'));
+          }
+          InputStreamReader.prototype.close = function () {};
+          javaClass('InputStreamReader', InputStreamReader);
+          function BufferedReader(reader) {
+            if (!(this instanceof BufferedReader)) return new BufferedReader(reader);
+            if (!reader || typeof reader.__text !== 'string') throw new TypeError('Unsupported Reader');
+            this.__lines = reader.__text.length ? reader.__text.split(/\r\n|\n|\r/) : [];
+            if (this.__lines.length && this.__lines[this.__lines.length - 1] === '') this.__lines.pop();
+            this.__i = 0;
+          }
+          BufferedReader.prototype.readLine = function () {
+            return this.__i < this.__lines.length ? this.__lines[this.__i++] : null;
+          };
+          BufferedReader.prototype.ready = function () { return this.__i < this.__lines.length; };
+          BufferedReader.prototype.close = function () {};
+          javaClass('BufferedReader', BufferedReader);
           var Charset = javaClass('Charset', {
             forName: function (name) { return new NativeString(NativeString(name)); },
             defaultCharset: function () { return new NativeString('UTF-8'); }
@@ -2070,11 +2212,11 @@ public struct JavaScriptRuleEvaluator: Sendable {
             },
             java: {
               net: { URLEncoder: URLEncoder },
-              lang: { String: JavaString, System: System },
+              lang: { String: JavaString, System: System, Thread: Thread, StringBuilder: StringBuilder },
               util: { Base64: Base64, Arrays: Arrays, UUID: UUID, ArrayList: ArrayList, LinkedList: LinkedList, HashMap: HashMap, LinkedHashMap: LinkedHashMap, zip: { GZIPInputStream: GZIPInputStream } },
               math: { BigInteger: BigInteger },
               security: { MessageDigest: MessageDigest, SecureRandom: SecureRandom },
-              io: { ByteArrayInputStream: ByteArrayInputStream, ByteArrayOutputStream: ByteArrayOutputStream },
+              io: { ByteArrayInputStream: ByteArrayInputStream, ByteArrayOutputStream: ByteArrayOutputStream, InputStreamReader: InputStreamReader, BufferedReader: BufferedReader },
               nio: { charset: { StandardCharsets: StandardCharsets, Charset: Charset } }
             },
             android: { util: { Base64: Base64 } }
