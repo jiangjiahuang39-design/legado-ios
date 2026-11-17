@@ -59,6 +59,25 @@ struct BookLibraryRegressionTests {
         #expect(model.errorMessage != nil)
     }
 
+    @Test func cancellingInitialShelfLoadResetsStateToNotStarted() async {
+        let repository = SuspendedLoadBookRepository()
+        let model = BookLibraryModel(
+            repository: repository,
+            groupRepository: InMemoryBookGroupRepository()
+        )
+
+        let loadingTask = Task { await model.load() }
+        await repository.waitForLoad()
+        #expect(model.loadState == .loading)
+
+        loadingTask.cancel()
+        await repository.finishLoad()
+        await loadingTask.value
+
+        #expect(model.loadState == .notStarted)
+        #expect(model.books.isEmpty)
+    }
+
     @Test func readerSettingSavesOnlyChangedFieldAndKeepsCurrentMetadataAndProgress() async {
         let (snapshot, chapters) = fixture()
         var current = snapshot
@@ -771,6 +790,27 @@ private actor FailingBookRepository: BookRepository {
 private actor FailingLoadBookRepository: BookRepository {
     func load() throws -> [Book] { throw CocoaError(.fileReadCorruptFile) }
     func save(_ books: [Book]) {}
+}
+
+private actor SuspendedLoadBookRepository: BookRepository {
+    private var continuation: CheckedContinuation<[Book], Never>?
+    private var loadStarted = false
+
+    func load() async -> [Book] {
+        loadStarted = true
+        return await withCheckedContinuation { continuation = $0 }
+    }
+
+    func save(_ books: [Book]) {}
+
+    func waitForLoad() async {
+        while !loadStarted { await Task.yield() }
+    }
+
+    func finishLoad() {
+        continuation?.resume(returning: [])
+        continuation = nil
+    }
 }
 
 private actor FailingLoadGroupRepository: BookGroupRepository {
