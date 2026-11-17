@@ -502,8 +502,9 @@ public struct JavaScriptRuleEvaluator: Sendable {
         }
         // JavaString supplies getBytes() on a boxed JS String. JSC otherwise
         // bridges it as {"0":"第", "1":"一", ...}, corrupting decrypted text.
-        let normalized = evaluated.flatMap {
-            context.objectForKeyedSubscript("__legadoUnboxString")?.call(withArguments: [$0])
+        let normalized = evaluated.flatMap { value -> JSValue? in
+            let prepared = context.objectForKeyedSubscript("__legadoJsoupNormalize")?.call(withArguments: [value]) ?? value
+            return context.objectForKeyedSubscript("__legadoUnboxString")?.call(withArguments: [prepared])
         }
         let value: JSONValue
         if stringifyResult {
@@ -1699,7 +1700,6 @@ public struct JavaScriptRuleEvaluator: Sendable {
           function IvParameterSpec(bytes) {
             if (!(this instanceof IvParameterSpec)) return new IvParameterSpec(bytes);
             this.bytes = checkedBytes(bytes).slice();
-            if (this.bytes.length !== 16) throw new Error('AES IV must contain 16 bytes');
             Object.freeze(this.bytes);
             Object.freeze(this);
           }
@@ -1707,22 +1707,28 @@ public struct JavaScriptRuleEvaluator: Sendable {
             ENCRYPT_MODE: 1,
             DECRYPT_MODE: 2,
             getInstance: function (algorithm) {
-              if (NativeString(algorithm).toUpperCase() !== 'AES/CBC/PKCS5PADDING') {
+              var transformation = NativeString(algorithm);
+              var algorithmName = transformation.split('/')[0].toUpperCase();
+              if (['AES', 'DES', 'DESEDE', 'TRIPLEDES', '3DES'].indexOf(algorithmName) < 0) {
                 throw new Error('Unsupported Cipher algorithm: ' + algorithm);
               }
-              var key = null, iv = null, operation = null;
+              var key = null, iv = [], operation = null;
               return {
                 init: function (mode, spec, parameters) {
-                  if ((mode !== 1 && mode !== 2) || !(spec instanceof SecretKeySpec) ||
-                      spec.algorithm.toUpperCase() !== 'AES' || !(parameters instanceof IvParameterSpec)) {
-                    throw new TypeError('AES key, IV and cipher mode required');
+                  if ((mode !== 1 && mode !== 2) || !(spec instanceof SecretKeySpec)) {
+                    throw new TypeError('Cipher key and mode required');
                   }
-                  operation = mode; key = spec.key; iv = parameters.bytes;
+                  if (parameters !== undefined && parameters !== null && !(parameters instanceof IvParameterSpec)) {
+                    throw new TypeError('IvParameterSpec required');
+                  }
+                  operation = mode; key = spec.key; iv = parameters ? parameters.bytes : [];
                 },
                 doFinal: function (bytes) {
                   if (key === null) throw new Error('Cipher not initialized');
-                  var result = __legadoAESCBC(operation, key, iv, checkedBytes(bytes));
-                  if (!Array.isArray(result)) throw new Error('AES/CBC operation failed');
+                  var result = java.__legadoCrypt(operation === 1, transformation, key, iv, checkedBytes(bytes), 'bytes');
+                  if (!Array.isArray(result)) {
+                    throw new Error('Cipher operation failed (' + transformation + '): ' + java.__legadoCryptError());
+                  }
                   return result;
                 }
               };
@@ -1765,6 +1771,22 @@ public struct JavaScriptRuleEvaluator: Sendable {
             getEncoder: function () { return Object.freeze({ encodeToString: this.encodeToString }); }
           });
           var Arrays = javaClass('Arrays', {
+            copyOf: function (bytes, length) {
+              checkedBytes(bytes);
+              if (!Number.isInteger(length) || length < 0 || length > 2097152) throw new RangeError('Invalid array length');
+              var copied = bytes.slice(0, length);
+              while (copied.length < length) copied.push(0);
+              return copied;
+            },
+            fill: function (bytes, value) {
+              checkedBytes(bytes);
+              for (var i = 0; i < bytes.length; i++) bytes[i] = value;
+            },
+            equals: function (left, right) {
+              if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+              for (var i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+              return true;
+            },
             copyOfRange: function (bytes, from, to) {
               checkedBytes(bytes);
               if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || from > bytes.length || to < from || to - from > 2097152) {
@@ -1788,12 +1810,194 @@ public struct JavaScriptRuleEvaluator: Sendable {
             parseBase64Binary: function (value) { return __legadoBase64DecodeBytes(NativeString(value)); },
             printHexBinary: function (bytes) { return __legadoHexEncodeBytes(checkedBytes(bytes)); }
           });
+          var System = javaClass('System', {
+            arraycopy: function (source, sourcePos, destination, destinationPos, length) {
+              checkedBytes(source); checkedBytes(destination);
+              if (sourcePos < 0 || destinationPos < 0 || length < 0 ||
+                  sourcePos + length > source.length || destinationPos + length > destination.length) {
+                throw new RangeError('arraycopy: last source index out of bounds');
+              }
+              var copied = source.slice(sourcePos, sourcePos + length);
+              for (var i = 0; i < length; i++) destination[destinationPos + i] = copied[i];
+            },
+            currentTimeMillis: function () { return Date.now(); }
+          });
+          var MessageDigest = javaClass('MessageDigest', {
+            getInstance: function (algorithm) {
+              var name = NativeString(algorithm), pending = [];
+              if (!Array.isArray(java.__legadoDigest(name, []))) {
+                throw new Error('Unsupported MessageDigest algorithm: ' + algorithm);
+              }
+              return {
+                update: function (bytes) { pending = pending.concat(checkedBytes(bytes)); },
+                digest: function (bytes) {
+                  if (bytes !== undefined) pending = pending.concat(checkedBytes(bytes));
+                  var out = java.__legadoDigest(name, pending);
+                  pending = [];
+                  if (!Array.isArray(out)) throw new Error('MessageDigest failed: ' + name);
+                  return out;
+                },
+                reset: function () { pending = []; }
+              };
+            }
+          });
+          var UUID = javaClass('UUID', {
+            randomUUID: function () { return new NativeString(java.__legadoRandomUUID()); }
+          });
+          function SecureRandom() {
+            if (!(this instanceof SecureRandom)) return new SecureRandom();
+          }
+          SecureRandom.prototype.nextBytes = function (bytes) {
+            checkedBytes(bytes);
+            var random = java.__legadoRandomBytes(bytes.length);
+            for (var i = 0; i < bytes.length; i++) bytes[i] = random[i];
+          };
+          SecureRandom.prototype.nextInt = function (bound) {
+            var r = java.__legadoRandomBytes(4);
+            var v = (((r[0] & 255) << 24) | ((r[1] & 255) << 16) | ((r[2] & 255) << 8) | (r[3] & 255)) >>> 0;
+            return bound ? v % bound : (v | 0);
+          };
+          javaClass('SecureRandom', SecureRandom);
+          function BigInteger(value, radix) {
+            if (!(this instanceof BigInteger)) return new BigInteger(value, radix);
+            var big;
+            if (typeof value === 'bigint') {
+              big = value;
+            } else if (Array.isArray(value)) {
+              big = 0n;
+              for (var i = 0; i < value.length; i++) big = (big << 8n) | BigInt(value[i] & 255);
+              if (value.length && value[0] < 0) big -= (1n << BigInt(8 * value.length));
+            } else {
+              var text = NativeString(value).trim(), base = radix === undefined ? 10 : Number(radix);
+              var negative = text.charAt(0) === '-';
+              if (negative || text.charAt(0) === '+') text = text.slice(1);
+              if (!text || !(base >= 2 && base <= 36)) throw new Error('NumberFormatException: ' + value);
+              big = 0n;
+              var radixBig = BigInt(base);
+              for (var j = 0; j < text.length; j++) {
+                var digit = parseInt(text.charAt(j), base);
+                if (digit !== digit) throw new Error('NumberFormatException: ' + value);
+                big = big * radixBig + BigInt(digit);
+              }
+              if (negative) big = -big;
+            }
+            Object.defineProperty(this, 'v', { value: big });
+          }
+          (function () {
+            var proto = BigInteger.prototype;
+            function wrap(v) { return new BigInteger(v); }
+            function val(x) { return x instanceof BigInteger ? x.v : new BigInteger(x).v; }
+            function def(name, fn) { Object.defineProperty(proto, name, { value: fn }); }
+            function bitLength(v) { var m = v < 0n ? ~v : v, n = 0; while (m > 0n) { m >>= 1n; n++; } return n; }
+            def('add', function (o) { return wrap(this.v + val(o)); });
+            def('subtract', function (o) { return wrap(this.v - val(o)); });
+            def('multiply', function (o) { return wrap(this.v * val(o)); });
+            def('divide', function (o) { return wrap(this.v / val(o)); });
+            def('remainder', function (o) { return wrap(this.v % val(o)); });
+            def('mod', function (o) {
+              var m = val(o);
+              if (m <= 0n) throw new Error('BigInteger: modulus not positive');
+              return wrap(((this.v % m) + m) % m);
+            });
+            def('and', function (o) { return wrap(this.v & val(o)); });
+            def('or', function (o) { return wrap(this.v | val(o)); });
+            def('xor', function (o) { return wrap(this.v ^ val(o)); });
+            def('not', function () { return wrap(~this.v); });
+            def('shiftLeft', function (n) { n = BigInt(n); return wrap(n >= 0n ? this.v << n : this.v >> -n); });
+            def('shiftRight', function (n) { n = BigInt(n); return wrap(n >= 0n ? this.v >> n : this.v << -n); });
+            def('negate', function () { return wrap(-this.v); });
+            def('abs', function () { return wrap(this.v < 0n ? -this.v : this.v); });
+            def('pow', function (n) { return wrap(this.v ** BigInt(n)); });
+            def('compareTo', function (o) { var t = val(o); return this.v < t ? -1 : (this.v > t ? 1 : 0); });
+            def('equals', function (o) { return o instanceof BigInteger && this.v === o.v; });
+            def('signum', function () { return this.v < 0n ? -1 : (this.v > 0n ? 1 : 0); });
+            def('bitLength', function () { return bitLength(this.v); });
+            def('testBit', function (n) { return ((this.v >> BigInt(n)) & 1n) === 1n; });
+            def('toString', function (r) { return this.v.toString(r === undefined ? 10 : Number(r)); });
+            def('longValue', function () { return Number(BigInt.asIntN(64, this.v)); });
+            def('intValue', function () { return Number(BigInt.asIntN(32, this.v)); });
+            def('doubleValue', function () { return Number(this.v); });
+            def('toByteArray', function () {
+              var length = Math.floor(bitLength(this.v) / 8) + 1, out = [];
+              for (var i = length - 1; i >= 0; i--) {
+                var b = Number((this.v >> BigInt(8 * i)) & 255n);
+                out.push(b > 127 ? b - 256 : b);
+              }
+              return out;
+            });
+            BigInteger.valueOf = function (n) { return wrap(BigInt(n)); };
+            BigInteger.ZERO = wrap(0n);
+            BigInteger.ONE = wrap(1n);
+            BigInteger.TWO = wrap(2n);
+            BigInteger.TEN = wrap(10n);
+          })();
+          javaClass('BigInteger', BigInteger);
+          function ByteArrayInputStream(bytes) {
+            if (!(this instanceof ByteArrayInputStream)) return new ByteArrayInputStream(bytes);
+            this.__b = checkedBytes(bytes).slice();
+            this.__p = 0;
+          }
+          ByteArrayInputStream.prototype.read = function (buffer, offset, length) {
+            if (buffer === undefined) return this.__p < this.__b.length ? (this.__b[this.__p++] & 255) : -1;
+            offset = offset || 0;
+            length = length === undefined ? buffer.length - offset : length;
+            if (this.__p >= this.__b.length) return -1;
+            var count = Math.min(length, this.__b.length - this.__p);
+            for (var i = 0; i < count; i++) buffer[offset + i] = this.__b[this.__p + i];
+            this.__p += count;
+            return count;
+          };
+          ByteArrayInputStream.prototype.available = function () { return this.__b.length - this.__p; };
+          ByteArrayInputStream.prototype.close = function () {};
+          javaClass('ByteArrayInputStream', ByteArrayInputStream);
+          function GZIPInputStream(input) {
+            if (!(this instanceof GZIPInputStream)) return new GZIPInputStream(input);
+            if (!(input instanceof ByteArrayInputStream)) throw new TypeError('ByteArrayInputStream required');
+            var rest = input.__b.slice(input.__p);
+            input.__p = input.__b.length;
+            var out = java.__legadoGunzip(rest);
+            if (!Array.isArray(out)) throw new Error('Not in GZIP format');
+            this.__b = out;
+            this.__p = 0;
+          }
+          GZIPInputStream.prototype = Object.create(ByteArrayInputStream.prototype);
+          javaClass('GZIPInputStream', GZIPInputStream);
+          function ByteArrayOutputStream() {
+            if (!(this instanceof ByteArrayOutputStream)) return new ByteArrayOutputStream();
+            this.__b = [];
+          }
+          ByteArrayOutputStream.prototype.write = function (value, offset, length) {
+            if (Array.isArray(value)) {
+              offset = offset || 0;
+              length = length === undefined ? value.length - offset : length;
+              for (var i = 0; i < length; i++) this.__b.push(value[offset + i]);
+            } else {
+              var b = value & 255;
+              this.__b.push(b > 127 ? b - 256 : b);
+            }
+          };
+          ByteArrayOutputStream.prototype.toByteArray = function () { return this.__b.slice(); };
+          ByteArrayOutputStream.prototype.size = function () { return this.__b.length; };
+          ByteArrayOutputStream.prototype.reset = function () { this.__b = []; };
+          ByteArrayOutputStream.prototype.flush = function () {};
+          ByteArrayOutputStream.prototype.close = function () {};
+          ByteArrayOutputStream.prototype.toString = function () { return __legadoUTF8String(this.__b); };
+          javaClass('ByteArrayOutputStream', ByteArrayOutputStream);
+          var StandardCharsets = javaClass('StandardCharsets', { UTF_8: 'UTF-8' });
           var packages = {
             javax: {
               crypto: { Mac: Mac, Cipher: Cipher, spec: { SecretKeySpec: SecretKeySpec, IvParameterSpec: IvParameterSpec } },
               xml: { bind: { DatatypeConverter: DatatypeConverter } }
             },
-            java: { net: { URLEncoder: URLEncoder }, lang: { String: JavaString }, util: { Base64: Base64, Arrays: Arrays } },
+            java: {
+              net: { URLEncoder: URLEncoder },
+              lang: { String: JavaString, System: System },
+              util: { Base64: Base64, Arrays: Arrays, UUID: UUID, zip: { GZIPInputStream: GZIPInputStream } },
+              math: { BigInteger: BigInteger },
+              security: { MessageDigest: MessageDigest, SecureRandom: SecureRandom },
+              io: { ByteArrayInputStream: ByteArrayInputStream, ByteArrayOutputStream: ByteArrayOutputStream },
+              nio: { charset: { StandardCharsets: StandardCharsets } }
+            },
             android: { util: { Base64: Base64 } }
           };
           Object.freeze(packages.javax.crypto.spec);
@@ -1803,6 +2007,12 @@ public struct JavaScriptRuleEvaluator: Sendable {
           Object.freeze(packages.javax);
           Object.freeze(packages.java.net);
           Object.freeze(packages.java.lang);
+          Object.freeze(packages.java.util.zip);
+          Object.freeze(packages.java.math);
+          Object.freeze(packages.java.security);
+          Object.freeze(packages.java.io);
+          Object.freeze(packages.java.nio.charset);
+          Object.freeze(packages.java.nio);
           Object.freeze(packages.java.util);
           Object.freeze(packages.java);
           Object.freeze(packages.android.util);
@@ -1811,7 +2021,8 @@ public struct JavaScriptRuleEvaluator: Sendable {
           global.JavaImporter = Object.freeze(function () {
             var imported = Object.create(null);
             var allowedPackages = [packages.java.lang, packages.java.net, packages.java.util,
-              packages.javax.crypto, packages.javax.crypto.spec, packages.javax.xml.bind, packages.android.util];
+              packages.javax.crypto, packages.javax.crypto.spec, packages.javax.xml.bind, packages.android.util,
+              packages.java.math, packages.java.security, packages.java.io, packages.java.util.zip];
             function addClass(value) {
               if (!value || typeof value.__javaSimpleName !== 'string') throw new TypeError('Unsupported Java class import');
               if (!Object.prototype.hasOwnProperty.call(imported, value.__javaSimpleName)) {
