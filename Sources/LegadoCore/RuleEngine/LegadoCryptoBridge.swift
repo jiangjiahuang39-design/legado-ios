@@ -99,6 +99,36 @@ enum LegadoCryptoBridge {
         }
         java.setObject(charsetDecode, forKeyedSubscript: "__legadoCharsetDecode" as NSString)
         java.setObject(charsetEncode, forKeyedSubscript: "__legadoCharsetEncode" as NSString)
+        let httpBlock: @convention(block) (String, String, Any?, Any?, Double) -> Any? = { method, urlString, headers, body, timeoutMs in
+            LegadoCryptoFailureStore.shared.set("")
+            guard let url = URL(string: urlString) else {
+                LegadoCryptoFailureStore.shared.set("无效 URL：\(urlString)")
+                return nil
+            }
+            var request = URLRequest(url: url)
+            request.httpMethod = method.isEmpty ? "GET" : method.uppercased()
+            request.timeoutInterval = min(max(timeoutMs / 1_000, 1), 180)
+            if let map = headers as? [String: Any] {
+                for (name, value) in map { request.setValue(String(describing: value), forHTTPHeaderField: name) }
+            }
+            if let payload = bytes(from: body, encoding: "bytes"), !payload.isEmpty { request.httpBody = Data(payload) }
+            do {
+                let response = try SynchronousJavaScriptNetworkLoader().load(request, followRedirects: true)
+                return httpResult(response)
+            } catch HTTPClientError.statusResponse(let response) {
+                return httpResult(response)
+            } catch {
+                LegadoCryptoFailureStore.shared.set(error.localizedDescription)
+                DiagnosticLog.shared.record(.error, category: "JS", message: "HttpURLConnection 请求失败：\(error.localizedDescription)")
+                return nil
+            }
+        }
+        let gzipBlock: @convention(block) (Any?) -> Any? = { data in
+            guard let input = bytes(from: data, encoding: "bytes"), let output = gzip(input) else { return nil }
+            return output.map { Int(Int8(bitPattern: $0)) }
+        }
+        java.setObject(httpBlock, forKeyedSubscript: "__legadoHttp" as NSString)
+        java.setObject(gzipBlock, forKeyedSubscript: "__legadoGzip" as NSString)
         java.setObject(cryptError, forKeyedSubscript: "__legadoCryptError" as NSString)
         java.setObject(randomBytes, forKeyedSubscript: "__legadoRandomBytes" as NSString)
         java.setObject(randomUUID, forKeyedSubscript: "__legadoRandomUUID" as NSString)
@@ -124,6 +154,53 @@ enum LegadoCryptoBridge {
         context.evaluateScript(cacheBootstrap)
 
         LegadoJsoupBridge.install(on: java, in: context)
+        LegadoWebViewBridge.install(on: java, in: context)
+    }
+
+    /// 响应转给 JS：若声明了 gzip 但内容已被系统解压，就去掉 Content-Encoding，避免脚本再解一次而失败。
+    private static func httpResult(_ response: HTTPResponse) -> [String: Any] {
+        let data = response.data
+        let isGzip = data.count > 2 && data[data.startIndex] == 0x1f && data[data.startIndex + 1] == 0x8b
+        var headers = response.headers
+        if !isGzip {
+            headers = headers.filter { $0.key.caseInsensitiveCompare("Content-Encoding") != .orderedSame }
+        }
+        return [
+            "code": response.statusCode,
+            "url": response.finalURL.absoluteString,
+            "headers": headers,
+            "body": data.map { Int(Int8(bitPattern: $0)) }
+        ]
+    }
+
+    /// 压成 gzip：头 + raw deflate（NSData .zlib）+ CRC32 + 长度。
+    private static func gzip(_ input: [UInt8]) -> [UInt8]? {
+        let deflated: [UInt8]
+        if input.isEmpty {
+            deflated = [0x03, 0x00]
+        } else {
+            guard let compressed = try? (Data(input) as NSData).compressed(using: .zlib) else { return nil }
+            deflated = Array(compressed as Data)
+        }
+        var output: [UInt8] = [0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff]
+        output.append(contentsOf: deflated)
+        let checksum = crc32(input)
+        let length = UInt32(truncatingIfNeeded: input.count)
+        for shift in stride(from: 0, to: 32, by: 8) { output.append(UInt8((checksum >> UInt32(shift)) & 0xff)) }
+        for shift in stride(from: 0, to: 32, by: 8) { output.append(UInt8((length >> UInt32(shift)) & 0xff)) }
+        return output
+    }
+
+    private static func crc32(_ data: [UInt8]) -> UInt32 {
+        var table = [UInt32](repeating: 0, count: 256)
+        for index in 0 ..< 256 {
+            var value = UInt32(index)
+            for _ in 0 ..< 8 { value = (value & 1) != 0 ? (0xEDB88320 ^ (value >> 1)) : (value >> 1) }
+            table[index] = value
+        }
+        var crc: UInt32 = 0xFFFF_FFFF
+        for byte in data { crc = table[Int((crc ^ UInt32(byte)) & 0xff)] ^ (crc >> 8) }
+        return crc ^ 0xFFFF_FFFF
     }
 
     /// IANA 字符集名（GBK、GB2312、GB18030、Big5、UTF-16 等）→ String.Encoding。
