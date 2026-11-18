@@ -132,6 +132,10 @@ enum LegadoJsoupBridge {
             for element in table.targets(id) { _ = try? element.remove() }
         }
 
+        let unescape: @convention(block) (String, Bool) -> String = { text, strict in
+            (try? Parser.unescapeEntities(text, strict)) ?? text
+        }
+        java.setObject(unescape, forKeyedSubscript: "__jsoupUnescape" as NSString)
         java.setObject(parse, forKeyedSubscript: "__jsoupParse" as NSString)
         java.setObject(make, forKeyedSubscript: "__jsoupMake" as NSString)
         java.setObject(newList, forKeyedSubscript: "__jsoupNewList" as NSString)
@@ -275,7 +279,14 @@ enum LegadoJsoupBridge {
         jsoup: {
           Jsoup: Jsoup,
           nodes: { Element: JElement, Document: JElement },
-          select: { Elements: JElements }
+          select: { Elements: JElements },
+          parser: {
+            Parser: {
+              unescapeEntities: function (text, strict) { return java.__jsoupUnescape(text == null ? '' : String(text), !!strict); },
+              htmlParser: function () { return {}; },
+              xmlParser: function () { return {}; }
+            }
+          }
         }
       };
 
