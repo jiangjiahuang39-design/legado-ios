@@ -228,47 +228,51 @@ private struct BookshelfView: View {
                             .padding(.top, min(64, max(24, geometry.size.height * 0.06)))
 
                         case .loaded:
-                            if displayedBooks.isEmpty {
-                                EmptyBookshelfHero { showsLocalImporter = true }
-                                    .padding(.top, min(80, max(24, geometry.size.height * 0.075)))
-                            } else {
-                                if let book = recentBook {
-                                    VStack(alignment: .leading, spacing: 12) {
-                                        Text("继续阅读")
-                                            .font(.subheadline.weight(.medium))
-                                            .foregroundStyle(.secondary)
-                                        NavigationLink {
-                                            BookshelfBookDestination(book: book, source: sources.sources.first { $0.bookSourceUrl == book.origin })
-                                        } label: {
-                                            ContinueReadingCard(book: book)
-                                        }
-                                        .buttonStyle(.plain)
-                                        .accessibilityLabel("继续阅读，\(book.name)，\(BookReadingPresentation.position(book))")
-                                        .accessibilityIdentifier("bookshelf.continue")
-                                    }
-                                    .padding(.bottom, 30)
-                                }
-                                bookshelfSummary
-                                if bookshelfLayout.hasPrefix("grid") {
-                                    LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 24) {
-                                        ForEach(displayedBooks) { book in
-                                            BookshelfBookLink(book: book, compact: false, grid: true)
-                                        }
-                                    }
+                            Group {
+                                if displayedBooks.isEmpty {
+                                    EmptyBookshelfHero { showsLocalImporter = true }
+                                        .padding(.top, min(80, max(24, geometry.size.height * 0.075)))
                                 } else {
-                                    ForEach(displayedBooks) { book in
-                                        BookshelfBookLink(book: book, compact: bookshelfLayout == "compact", grid: false)
-                                        if book.id != displayedBooks.last?.id {
-                                            Rectangle().fill(ReadingTheme.separator).frame(height: 0.5)
-                                                .padding(.leading, bookshelfLayout == "compact" ? 54 : 66)
+                                    if let book = recentBook {
+                                        VStack(alignment: .leading, spacing: 12) {
+                                            Text("继续阅读")
+                                                .font(.subheadline.weight(.medium))
+                                                .foregroundStyle(.secondary)
+                                            NavigationLink {
+                                                BookshelfBookDestination(book: book, source: sources.sources.first { $0.bookSourceUrl == book.origin })
+                                            } label: {
+                                                ContinueReadingCard(book: book)
+                                            }
+                                            .buttonStyle(.plain)
+                                            .accessibilityLabel("继续阅读，\(book.name)，\(BookReadingPresentation.position(book))")
+                                            .accessibilityIdentifier("bookshelf.continue")
+                                        }
+                                        .padding(.bottom, 30)
+                                    }
+                                    bookshelfSummary
+                                    if bookshelfLayout.hasPrefix("grid") {
+                                        LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 24) {
+                                            ForEach(displayedBooks) { book in
+                                                BookshelfBookLink(book: book, compact: false, grid: true)
+                                            }
+                                        }
+                                    } else {
+                                        ForEach(displayedBooks) { book in
+                                            BookshelfBookLink(book: book, compact: bookshelfLayout == "compact", grid: false)
+                                            if book.id != displayedBooks.last?.id {
+                                                Rectangle().fill(ReadingTheme.separator).frame(height: 0.5)
+                                                    .padding(.leading, bookshelfLayout == "compact" ? 54 : 66)
+                                            }
                                         }
                                     }
                                 }
                             }
+                            .transition(.opacity)
                         }
                     }
                     .padding(.horizontal, 24)
                     .padding(.bottom, 32)
+                    .animation(.easeOut(duration: 0.3), value: library.loadState)
                 }
                 .frame(maxWidth: .infinity)
             }
