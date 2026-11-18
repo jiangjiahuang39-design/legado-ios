@@ -356,7 +356,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
             guard script.utf8.count <= maximumScriptLength else {
                 throw RuleEngineError.resourceLimit(rule: script, detail: "JavaScript 规则超过长度上限")
             }
-            try rejectUnboundedExecution(script)
+            let guardedSource = try guardedScript(script)
             guard let context = JSContext() else {
                 throw RuleEngineError.invalidInput(rule: script, expected: "无法创建 JavaScriptCore 上下文")
             }
@@ -380,7 +380,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
                     context.exception = nil
                     installChapter(in: context, chapter: formatted[index])
                     context.setObject(index + 1, forKeyedSubscript: "index" as NSString)
-                    let value = context.evaluateScript(script)
+                    let value = context.evaluateScript(guardedSource)
                     // Rhino unwraps null/undefined to null: keep the old title.
                     let title = value.flatMap { $0.isNull || $0.isUndefined ? nil : $0.toString() }
                     if let exceptionMessage {
@@ -428,7 +428,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
         guard script.utf8.count <= maximumScriptLength else {
             throw RuleEngineError.resourceLimit(rule: script, detail: "JavaScript 规则超过长度上限")
         }
-        try rejectUnboundedExecution(script)
+        let guardedSource = try guardedScript(script)
 
         let box = JSVariableBox(executionContext.rssArticle?.variableMap.merging(executionContext.variables) { _, current in current }
             ?? executionContext.variables)
@@ -489,14 +489,13 @@ public struct JavaScriptRuleEvaluator: Sendable {
             guard library.utf8.count <= max(maximumScriptLength, 4 * 1_024 * 1_024) else {
                 throw RuleEngineError.resourceLimit(rule: library, detail: "书源 jsLib 超过长度上限")
             }
-            try rejectUnboundedExecution(library)
-            context.evaluateScript(library)
+            context.evaluateScript(try guardedScript(library))
             if let exceptionMessage {
                 throw RuleEngineError.malformedRule(rule: library, detail: "书源 jsLib 执行失败：\(exceptionMessage)")
             }
         }
 
-        let evaluated = context.evaluateScript(script)
+        let evaluated = context.evaluateScript(guardedSource)
         if let exceptionMessage {
             throw RuleEngineError.malformedRule(rule: script, detail: "JavaScript 执行失败：\(exceptionMessage)")
         }
@@ -1685,12 +1684,28 @@ public struct JavaScriptRuleEvaluator: Sendable {
         return absolute.absoluteString
     }
 
-    private func rejectUnboundedExecution(_ script: String) throws {
+    /// 书源里常见的 `while(true){... break}`、`for(;;){...}` 是合法写法，不能一刀切拒绝。
+    /// 这里把这几种“无条件循环”改写成带计数的循环：累计超过 300 万次迭代就抛错，
+    /// 既放行正常书源，也能在几秒内终止真正的死循环。`Function` 构造器仍然拒绝。
+    private func guardedScript(_ script: String) throws -> String {
         let compact = script.replacingOccurrences(of: #"\s+"#, with: "", options: .regularExpression).lowercased()
-        let rejected = ["while(true)", "while(1)", "for(;;)", "functionconstructor("]
-        if let token = rejected.first(where: compact.contains) {
-            throw RuleEngineError.resourceLimit(rule: script, detail: "JavaScript 包含未受控执行结构：\(token)")
+        if compact.contains("functionconstructor(") {
+            throw RuleEngineError.resourceLimit(rule: script, detail: "JavaScript 包含未受控执行结构：functionconstructor(")
         }
+        var guarded = script
+        let rewrites: [(pattern: String, template: String)] = [
+            (#"\bwhile\s*\(\s*(?:true|1)\s*\)"#, "while(__legadoLoop())"),
+            (#"\bfor\s*\(\s*;\s*;\s*\)"#, "for(;__legadoLoop();)"),
+            (#"\bfor\s*\(\s*;\s*(?:true|1)\s*;\s*\)"#, "for(;__legadoLoop();)")
+        ]
+        var changed = false
+        for rewrite in rewrites {
+            let updated = guarded.replacingOccurrences(of: rewrite.pattern, with: rewrite.template, options: .regularExpression)
+            if updated != guarded { changed = true; guarded = updated }
+        }
+        guard changed else { return script }
+        let prelude = "var __lgN=0;function __legadoLoop(){if(++__lgN>3000000)throw new Error('脚本循环次数过多，疑似死循环');return true;}\n"
+        return prelude + guarded
     }
 
     private static func stringify(_ value: Any?) -> String {
@@ -1809,6 +1824,14 @@ public struct JavaScriptRuleEvaluator: Sendable {
             Object.freeze(this.bytes);
             Object.freeze(this);
           }
+          function GCMParameterSpec(tagBits, bytes) {
+            if (!(this instanceof GCMParameterSpec)) return new GCMParameterSpec(tagBits, bytes);
+            this.tagBits = Number(tagBits);
+            this.bytes = checkedBytes(bytes).slice();
+            Object.freeze(this.bytes);
+            Object.freeze(this);
+          }
+          javaClass('GCMParameterSpec', GCMParameterSpec);
           var Cipher = javaClass('Cipher', {
             ENCRYPT_MODE: 1,
             DECRYPT_MODE: 2,
@@ -1818,20 +1841,26 @@ public struct JavaScriptRuleEvaluator: Sendable {
               if (['AES', 'DES', 'DESEDE', 'TRIPLEDES', '3DES'].indexOf(algorithmName) < 0) {
                 throw new Error('Unsupported Cipher algorithm: ' + algorithm);
               }
-              var key = null, iv = [], operation = null;
+              var isGCM = /\/GCM\//i.test(transformation);
+              var key = null, iv = [], operation = null, tagBits = 128, aad = [];
               return {
                 init: function (mode, spec, parameters) {
                   if ((mode !== 1 && mode !== 2) || !(spec instanceof SecretKeySpec)) {
                     throw new TypeError('Cipher key and mode required');
                   }
-                  if (parameters !== undefined && parameters !== null && !(parameters instanceof IvParameterSpec)) {
-                    throw new TypeError('IvParameterSpec required');
+                  if (parameters !== undefined && parameters !== null &&
+                      !(parameters instanceof IvParameterSpec) && !(parameters instanceof GCMParameterSpec)) {
+                    throw new TypeError('IvParameterSpec or GCMParameterSpec required');
                   }
                   operation = mode; key = spec.key; iv = parameters ? parameters.bytes : [];
+                  if (parameters instanceof GCMParameterSpec) tagBits = parameters.tagBits;
                 },
+                updateAAD: function (bytes) { aad = aad.concat(checkedBytes(bytes)); },
                 doFinal: function (bytes) {
                   if (key === null) throw new Error('Cipher not initialized');
-                  var result = java.__legadoCrypt(operation === 1, transformation, key, iv, checkedBytes(bytes), 'bytes');
+                  var result = isGCM
+                    ? java.__legadoGCM(operation === 1, key, iv, checkedBytes(bytes), aad, tagBits)
+                    : java.__legadoCrypt(operation === 1, transformation, key, iv, checkedBytes(bytes), 'bytes');
                   if (!Array.isArray(result)) {
                     throw new Error('Cipher operation failed (' + transformation + '): ' + java.__legadoCryptError());
                   }
@@ -2095,6 +2124,91 @@ public struct JavaScriptRuleEvaluator: Sendable {
           ByteArrayOutputStream.prototype.toString = function () { return __legadoUTF8String(this.__b); };
           javaClass('ByteArrayOutputStream', ByteArrayOutputStream);
           var StandardCharsets = javaClass('StandardCharsets', { UTF_8: 'UTF-8' });
+          function ByteOrder(name) { this.name = name; }
+          ByteOrder.prototype.toString = function () { return this.name; };
+          ByteOrder.BIG_ENDIAN = new ByteOrder('BIG_ENDIAN');
+          ByteOrder.LITTLE_ENDIAN = new ByteOrder('LITTLE_ENDIAN');
+          ByteOrder.nativeOrder = function () { return ByteOrder.LITTLE_ENDIAN; };
+          javaClass('ByteOrder', ByteOrder);
+          function ByteBuffer(bytes) {
+            this.__d = bytes; this.__p = 0; this.__l = bytes.length; this.__le = false;
+          }
+          ByteBuffer.allocate = function (size) {
+            if (!Number.isInteger(size) || size < 0 || size > 16777216) throw new RangeError('Invalid capacity');
+            var data = [];
+            for (var i = 0; i < size; i++) data.push(0);
+            return new ByteBuffer(data);
+          };
+          ByteBuffer.wrap = function (bytes) { return new ByteBuffer(checkedBytes(bytes)); };
+          (function () {
+            var P = ByteBuffer.prototype;
+            function toByte(v) { var b = v & 255; return b > 127 ? b - 256 : b; }
+            function putBytes(buf, bytes) {
+              if (buf.__p + bytes.length > buf.__l) throw new RangeError('BufferOverflowException');
+              for (var i = 0; i < bytes.length; i++) buf.__d[buf.__p++] = bytes[i];
+              return buf;
+            }
+            function numberBytes(buf, value, width) {
+              var big = BigInt.asUintN(width * 8, BigInt(Math.trunc(Number(value))));
+              var out = [];
+              for (var i = 0; i < width; i++) out.push(toByte(Number((big >> BigInt(8 * i)) & 255n)));
+              return buf.__le ? out : out.reverse();
+            }
+            function getNumber(buf, width, signed) {
+              if (buf.__p + width > buf.__l) throw new RangeError('BufferUnderflowException');
+              var bytes = buf.__d.slice(buf.__p, buf.__p + width);
+              buf.__p += width;
+              if (!buf.__le) bytes.reverse();
+              var big = 0n;
+              for (var i = width - 1; i >= 0; i--) big = (big << 8n) | BigInt(bytes[i] & 255);
+              return Number(signed ? BigInt.asIntN(width * 8, big) : big);
+            }
+            function def(name, fn) { Object.defineProperty(P, name, { value: fn }); }
+            def('array', function () { return this.__d; });
+            def('capacity', function () { return this.__d.length; });
+            def('position', function (n) { if (n === undefined) return this.__p; this.__p = n; return this; });
+            def('limit', function (n) { if (n === undefined) return this.__l; this.__l = n; return this; });
+            def('remaining', function () { return this.__l - this.__p; });
+            def('hasRemaining', function () { return this.__p < this.__l; });
+            def('flip', function () { this.__l = this.__p; this.__p = 0; return this; });
+            def('rewind', function () { this.__p = 0; return this; });
+            def('clear', function () { this.__p = 0; this.__l = this.__d.length; return this; });
+            def('order', function (o) { if (o === undefined) return this.__le ? ByteOrder.LITTLE_ENDIAN : ByteOrder.BIG_ENDIAN; this.__le = (o === ByteOrder.LITTLE_ENDIAN); return this; });
+            def('put', function (value, offset, length) {
+              if (Array.isArray(value)) {
+                offset = offset || 0; length = length === undefined ? value.length - offset : length;
+                return putBytes(this, value.slice(offset, offset + length));
+              }
+              return putBytes(this, [toByte(value)]);
+            });
+            def('putShort', function (v) { return putBytes(this, numberBytes(this, v, 2)); });
+            def('putInt', function (v) { return putBytes(this, numberBytes(this, v, 4)); });
+            def('putLong', function (v) { return putBytes(this, numberBytes(this, v, 8)); });
+            def('get', function (target) {
+              if (Array.isArray(target)) {
+                if (this.__p + target.length > this.__l) throw new RangeError('BufferUnderflowException');
+                for (var i = 0; i < target.length; i++) target[i] = this.__d[this.__p++];
+                return this;
+              }
+              if (this.__p >= this.__l) throw new RangeError('BufferUnderflowException');
+              return this.__d[this.__p++];
+            });
+            def('getShort', function () { return getNumber(this, 2, true); });
+            def('getInt', function () { return getNumber(this, 4, true); });
+            def('getLong', function () { return getNumber(this, 8, true); });
+          })();
+          javaClass('ByteBuffer', ByteBuffer);
+          var CookieManager = javaClass('CookieManager', {
+            getInstance: function () {
+              return {
+                getCookie: function (url) { var c = cookie.getCookie(NativeString(url)); return c === undefined ? null : c; },
+                setCookie: function (url, value) { cookie.setCookie(NativeString(url), NativeString(value)); },
+                flush: function () {},
+                setAcceptCookie: function () {},
+                removeAllCookies: function () {}
+              };
+            }
+          });
           var TextUtils = javaClass('TextUtils', {
             isEmpty: function (value) { return value === null || value === undefined || NativeString(value).length === 0; },
             equals: function (a, b) { return (a === null || a === undefined) ? (b === null || b === undefined) : NativeString(a) === NativeString(b); },
@@ -2306,7 +2420,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
           javaClass('LinkedHashMap', LinkedHashMap);
           var packages = {
             javax: {
-              crypto: { Mac: Mac, Cipher: Cipher, spec: { SecretKeySpec: SecretKeySpec, IvParameterSpec: IvParameterSpec } },
+              crypto: { Mac: Mac, Cipher: Cipher, spec: { SecretKeySpec: SecretKeySpec, IvParameterSpec: IvParameterSpec, GCMParameterSpec: GCMParameterSpec } },
               xml: { bind: { DatatypeConverter: DatatypeConverter } }
             },
             java: {
@@ -2316,9 +2430,9 @@ public struct JavaScriptRuleEvaluator: Sendable {
               math: { BigInteger: BigInteger },
               security: { MessageDigest: MessageDigest, SecureRandom: SecureRandom },
               io: { ByteArrayInputStream: ByteArrayInputStream, ByteArrayOutputStream: ByteArrayOutputStream, InputStreamReader: InputStreamReader, BufferedReader: BufferedReader },
-              nio: { charset: { StandardCharsets: StandardCharsets, Charset: Charset } }
+              nio: { ByteBuffer: ByteBuffer, ByteOrder: ByteOrder, charset: { StandardCharsets: StandardCharsets, Charset: Charset } }
             },
-            android: { util: { Base64: Base64 }, text: { TextUtils: TextUtils } }
+            android: { util: { Base64: Base64 }, text: { TextUtils: TextUtils }, webkit: { CookieManager: CookieManager } }
           };
           Object.freeze(packages.javax.crypto.spec);
           Object.freeze(packages.javax.crypto);
@@ -2337,6 +2451,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
           Object.freeze(packages.java);
           Object.freeze(packages.android.util);
           Object.freeze(packages.android.text);
+          Object.freeze(packages.android.webkit);
           Object.freeze(packages.android);
           global.Packages = Object.freeze(packages);
           global.JavaImporter = Object.freeze(function () {
