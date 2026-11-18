@@ -127,6 +127,53 @@ enum LegadoCryptoBridge {
             guard let input = bytes(from: data, encoding: "bytes"), let output = gzip(input) else { return nil }
             return output.map { Int(Int8(bitPattern: $0)) }
         }
+        let gcmBlock: @convention(block) (Bool, Any?, Any?, Any?, Any?, Double) -> Any? = { encrypt, key, iv, data, aad, tagBits in
+            do {
+                guard let keyBytes = bytes(from: key, encoding: "utf8"), [16, 24, 32].contains(keyBytes.count) else {
+                    throw CryptoFailure("AES 密钥长度必须为 16/24/32 字节")
+                }
+                guard let ivBytes = bytes(from: iv, encoding: "bytes"), ivBytes.count == 12 else {
+                    throw CryptoFailure("GCM 的 IV 目前只支持 12 字节")
+                }
+                guard tagBits == 128 else { throw CryptoFailure("GCM 标签长度目前只支持 128 位") }
+                guard let input = bytes(from: data, encoding: "bytes") else { throw CryptoFailure("输入数据无效") }
+                let additional = Data(bytes(from: aad, encoding: "bytes") ?? [])
+                let symmetricKey = SymmetricKey(data: keyBytes)
+                let nonce = try AES.GCM.Nonce(data: Data(ivBytes))
+                if encrypt {
+                    let sealed = try AES.GCM.seal(Data(input), using: symmetricKey, nonce: nonce, authenticating: additional)
+                    return Array(sealed.ciphertext + sealed.tag).map { Int(Int8(bitPattern: $0)) }
+                }
+                guard input.count >= 16 else { throw CryptoFailure("GCM 密文太短（需包含 16 字节标签）") }
+                let box = try AES.GCM.SealedBox(
+                    nonce: nonce, ciphertext: Data(input.dropLast(16)), tag: Data(input.suffix(16))
+                )
+                let plain = try AES.GCM.open(box, using: symmetricKey, authenticating: additional)
+                return Array(plain).map { Int(Int8(bitPattern: $0)) }
+            } catch {
+                LegadoCryptoFailureStore.shared.set(describe(error))
+                DiagnosticLog.shared.record(.error, category: "JS", message: "GCM 失败：\(describe(error))")
+                return nil
+            }
+        }
+        let chineseBlock: @convention(block) (String, Bool) -> String = { text, toSimplified in
+            let identifier = toSimplified ? "Hant-Hans" : "Hans-Hant"
+            return text.applyingTransform(StringTransform(rawValue: identifier), reverse: false) ?? text
+        }
+        let downloadBlock: @convention(block) (String) -> Any? = { urlString in
+            LegadoJSFileSandbox.download(urlString)
+        }
+        let readFileBlock: @convention(block) (String, String) -> Any? = { path, charset in
+            guard let data = LegadoJSFileSandbox.read(path) else { return nil }
+            if let encoding = stringEncoding(named: charset), let text = String(data: data, encoding: encoding) { return text }
+            return String(decoding: data, as: UTF8.self)
+        }
+        let deleteFileBlock: @convention(block) (String) -> Bool = { path in LegadoJSFileSandbox.delete(path) }
+        java.setObject(gcmBlock, forKeyedSubscript: "__legadoGCM" as NSString)
+        java.setObject(chineseBlock, forKeyedSubscript: "__legadoChinese" as NSString)
+        java.setObject(downloadBlock, forKeyedSubscript: "__legadoDownload" as NSString)
+        java.setObject(readFileBlock, forKeyedSubscript: "__legadoReadFile" as NSString)
+        java.setObject(deleteFileBlock, forKeyedSubscript: "__legadoDeleteFile" as NSString)
         java.setObject(httpBlock, forKeyedSubscript: "__legadoHttp" as NSString)
         java.setObject(gzipBlock, forKeyedSubscript: "__legadoGzip" as NSString)
         java.setObject(cryptError, forKeyedSubscript: "__legadoCryptError" as NSString)
@@ -152,6 +199,7 @@ enum LegadoCryptoBridge {
         java.setObject(cachePut, forKeyedSubscript: "__legadoCachePut" as NSString)
         java.setObject(cacheDelete, forKeyedSubscript: "__legadoCacheDelete" as NSString)
         context.evaluateScript(cacheBootstrap)
+        context.evaluateScript(extraBootstrap)
 
         LegadoJsoupBridge.install(on: java, in: context)
         LegadoWebViewBridge.install(on: java, in: context)
@@ -205,6 +253,12 @@ enum LegadoCryptoBridge {
 
     /// IANA 字符集名（GBK、GB2312、GB18030、Big5、UTF-16 等）→ String.Encoding。
     private static func stringEncoding(named name: String) -> String.Encoding? {
+        switch name.uppercased().replacingOccurrences(of: "_", with: "").replacingOccurrences(of: "-", with: "") {
+        case "ISO88591", "LATIN1": return .isoLatin1
+        case "UTF8": return .utf8
+        case "USASCII", "ASCII": return .ascii
+        default: break
+        }
         let cfEncoding = CFStringConvertIANACharSetNameToEncoding(name as CFString)
         guard cfEncoding != kCFStringEncodingInvalidId else { return nil }
         return String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(cfEncoding))
@@ -234,6 +288,39 @@ enum LegadoCryptoBridge {
         guard let inflated = try? deflated.decompressed(using: .zlib) else { return nil }
         return Array(inflated as Data)
     }
+
+    /// 简繁转换、沙盒文件（downloadFile / readTxtFile / cacheFile / importScript）、java.toString。
+    private static let extraBootstrap = #"""
+    (function () {
+      function text(v) { return v === null || v === undefined ? '' : String(v); }
+      java.t2s = function (v) { return java.__legadoChinese(text(v), true); };
+      java.s2t = function (v) { return java.__legadoChinese(text(v), false); };
+      java.toString = function (v) { return text(v); };
+      java.downloadFile = function (url) { var p = java.__legadoDownload(text(url)); return p === undefined ? null : p; };
+      java.readTxtFile = function (path, charset) {
+        var t = java.__legadoReadFile(text(path), charset ? text(charset) : 'UTF-8');
+        return t === undefined || t === null ? '' : t;
+      };
+      java.deleteFile = function (path) { return java.__legadoDeleteFile(text(path)); };
+      java.cacheFile = function (url, saveTime) {
+        var key = 'cacheFile:' + text(url);
+        var hit = cache.get(key);
+        if (hit !== null && hit !== undefined) return hit;
+        var path = java.downloadFile(url);
+        if (!path) return '';
+        var body = java.readTxtFile(path, 'UTF-8');
+        java.deleteFile(path);
+        if (body) cache.put(key, body, Number(saveTime) || 0);
+        return body;
+      };
+      java.importScript = function (path) {
+        var p = text(path);
+        var body = /^https?:/i.test(p) ? java.cacheFile(p, 86400) : java.readTxtFile(p, 'UTF-8');
+        if (!body) throw new Error(p + ' 内容获取失败或者为空');
+        return body;
+      };
+    })();
+    """#
 
     /// Legado 的全局 `cache` 对象：get / put(key, value, saveTime 秒，0 为不过期) / delete，
     /// 以及 getFromMemory / putMemory / deleteMemory（仅内存）。
@@ -648,4 +735,45 @@ private final class LegadoCryptoFailureStore: @unchecked Sendable {
     private var message = ""
     func set(_ value: String) { lock.lock(); message = value; lock.unlock() }
     func get() -> String { lock.lock(); defer { lock.unlock() }; return message }
+}
+
+
+/// 书源 JS 只能读写这个临时目录里由 downloadFile 下载的文件，避免访问 App 其它数据。
+private enum LegadoJSFileSandbox {
+    private static var directory: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("legado-js", isDirectory: true)
+    }
+
+    static func download(_ urlString: String) -> String? {
+        guard let url = URL(string: urlString), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 30
+            let response = try SynchronousJavaScriptNetworkLoader().load(request, followRedirects: true)
+            let name = SHA256.hash(data: Data(urlString.utf8)).map { String(format: "%02x", $0) }.joined()
+            let target = directory.appendingPathComponent(name)
+            try response.data.write(to: target, options: .atomic)
+            return target.path
+        } catch {
+            DiagnosticLog.shared.record(.error, category: "JS", message: "downloadFile 失败：\(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private static func allowed(_ path: String) -> URL? {
+        let candidate = URL(fileURLWithPath: path).standardizedFileURL
+        let root = directory.standardizedFileURL.path + "/"
+        return candidate.path.hasPrefix(root) ? candidate : nil
+    }
+
+    static func read(_ path: String) -> Data? {
+        guard let url = allowed(path) else { return nil }
+        return try? Data(contentsOf: url)
+    }
+
+    static func delete(_ path: String) -> Bool {
+        guard let url = allowed(path) else { return false }
+        return (try? FileManager.default.removeItem(at: url)) != nil
+    }
 }
