@@ -385,7 +385,7 @@ private struct BookshelfView: View {
             isAnimatingCover = true
         }
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(520))
+            try? await Task.sleep(nanoseconds: 520_000_000)
             isOpeningDestination = true
         }
     }
