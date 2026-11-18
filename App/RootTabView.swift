@@ -157,6 +157,7 @@ private struct BookshelfView: View {
     @State private var showsBookOrder = false
     @State private var openingBook: Book?
     @State private var openingSource: BookSource?
+    @State private var openingCoverID: String?
     @State private var isAnimatingCover = false
     @State private var isOpeningDestination = false
     @Namespace private var coverAnimationNamespace
@@ -244,10 +245,18 @@ private struct BookshelfView: View {
                                             Text("继续阅读")
                                                 .font(.subheadline.weight(.medium))
                                                 .foregroundStyle(.secondary)
-                                            NavigationLink {
-                                                BookshelfBookDestination(book: book, source: sources.sources.first { $0.bookSourceUrl == book.origin })
+                                            Button {
+                                                beginOpening(
+                                                    book,
+                                                    source: sources.sources.first { $0.bookSourceUrl == book.origin },
+                                                    animationID: "\(book.bookUrl)::continue"
+                                                )
                                             } label: {
-                                                ContinueReadingCard(book: book)
+                                                ContinueReadingCard(
+                                                    book: book,
+                                                    animationNamespace: coverAnimationNamespace,
+                                                    isAnimatingCover: isAnimatingCover && openingCoverID == "\(book.bookUrl)::continue"
+                                                )
                                             }
                                             .buttonStyle(.plain)
                                             .accessibilityLabel("继续阅读，\(book.name)，\(BookReadingPresentation.position(book))")
@@ -264,8 +273,8 @@ private struct BookshelfView: View {
                                                     compact: false,
                                                     grid: true,
                                                     animationNamespace: coverAnimationNamespace,
-                                                    isAnimatingCover: isAnimatingCover && openingBook?.bookUrl == book.bookUrl
-                                                ) { beginOpening(book, source: sources.sources.first { $0.bookSourceUrl == book.origin }) }
+                                                    isAnimatingCover: isAnimatingCover && openingCoverID == book.bookUrl
+                                                ) { beginOpening(book, source: sources.sources.first { $0.bookSourceUrl == book.origin }, animationID: book.bookUrl) }
                                             }
                                         }
                                     } else {
@@ -275,8 +284,8 @@ private struct BookshelfView: View {
                                                 compact: bookshelfLayout == "compact",
                                                 grid: false,
                                                 animationNamespace: coverAnimationNamespace,
-                                                isAnimatingCover: isAnimatingCover && openingBook?.bookUrl == book.bookUrl
-                                            ) { beginOpening(book, source: sources.sources.first { $0.bookSourceUrl == book.origin }) }
+                                                isAnimatingCover: isAnimatingCover && openingCoverID == book.bookUrl
+                                            ) { beginOpening(book, source: sources.sources.first { $0.bookSourceUrl == book.origin }, animationID: book.bookUrl) }
                                             if book.id != displayedBooks.last?.id {
                                                 Rectangle().fill(ReadingTheme.separator).frame(height: 0.5)
                                                     .padding(.leading, bookshelfLayout == "compact" ? 54 : 66)
@@ -304,7 +313,7 @@ private struct BookshelfView: View {
                         width: coverWidth,
                         height: coverWidth / 0.70
                     )
-                    .matchedGeometryEffect(id: book.bookUrl, in: coverAnimationNamespace, isSource: true)
+                    .matchedGeometryEffect(id: openingCoverID ?? book.bookUrl, in: coverAnimationNamespace, isSource: true)
                     .shadow(color: .black.opacity(0.24), radius: 24, x: 0, y: 14)
                     .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
                     .allowsHitTesting(false)
@@ -331,6 +340,7 @@ private struct BookshelfView: View {
             if !isActive {
                 openingBook = nil
                 openingSource = nil
+                openingCoverID = nil
                 isAnimatingCover = false
             }
         }
@@ -377,10 +387,11 @@ private struct BookshelfView: View {
         }
     }
 
-    private func beginOpening(_ book: Book, source: BookSource?) {
+    private func beginOpening(_ book: Book, source: BookSource?, animationID: String) {
         guard openingBook == nil, !isOpeningDestination else { return }
         openingBook = book
         openingSource = source
+        openingCoverID = animationID
         withAnimation(.spring(response: 0.48, dampingFraction: 0.86)) {
             isAnimatingCover = true
         }
@@ -666,6 +677,8 @@ private struct BookshelfBookDestination: View {
 private struct ContinueReadingCard: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let book: Book
+    let animationNamespace: Namespace.ID
+    let isAnimatingCover: Bool
 
     var body: some View {
         HStack(alignment: .center, spacing: 18) {
@@ -704,6 +717,8 @@ private struct ContinueReadingCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             if !dynamicTypeSize.isAccessibilitySize {
                 BookCoverArtwork(title: book.name, author: book.author, remoteURL: book.coverUrl, width: 94, height: 140)
+                    .matchedGeometryEffect(id: "\(book.bookUrl)::continue", in: animationNamespace, isSource: !isAnimatingCover)
+                    .opacity(isAnimatingCover ? 0 : 1)
             }
         }
         .padding(20)
