@@ -155,6 +155,11 @@ private struct BookshelfView: View {
     @State private var selectedGroupID = BookGroup.idAll
     @State private var showsGroupManager = false
     @State private var showsBookOrder = false
+    @State private var openingBook: Book?
+    @State private var openingSource: BookSource?
+    @State private var isAnimatingCover = false
+    @State private var isOpeningDestination = false
+    @Namespace private var coverAnimationNamespace
     @AppStorage("bookshelfLayout") private var bookshelfLayout = "grid3"
     @AppStorage("bookshelfSort") private var bookshelfSort = 0
 
@@ -174,8 +179,9 @@ private struct BookshelfView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ScrollView {
-                VStack(spacing: 0) {
+            ZStack {
+                ScrollView {
+                    VStack(spacing: 0) {
                     ReadingPageHeader(title: "书架", subtitle: "阅读，让时间有了形状") {
                         NavigationLink { SearchView() } label: {
                             ReadingToolbarIcon(systemName: "magnifyingglass")
@@ -253,12 +259,24 @@ private struct BookshelfView: View {
                                     if bookshelfLayout.hasPrefix("grid") {
                                         LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 24) {
                                             ForEach(displayedBooks) { book in
-                                                BookshelfBookLink(book: book, compact: false, grid: true)
+                                                BookshelfBookLink(
+                                                    book: book,
+                                                    compact: false,
+                                                    grid: true,
+                                                    animationNamespace: coverAnimationNamespace,
+                                                    isAnimatingCover: isAnimatingCover && openingBook?.bookUrl == book.bookUrl
+                                                ) { beginOpening(book, source: sources.sources.first { $0.bookSourceUrl == book.origin }) }
                                             }
                                         }
                                     } else {
                                         ForEach(displayedBooks) { book in
-                                            BookshelfBookLink(book: book, compact: bookshelfLayout == "compact", grid: false)
+                                            BookshelfBookLink(
+                                                book: book,
+                                                compact: bookshelfLayout == "compact",
+                                                grid: false,
+                                                animationNamespace: coverAnimationNamespace,
+                                                isAnimatingCover: isAnimatingCover && openingBook?.bookUrl == book.bookUrl
+                                            ) { beginOpening(book, source: sources.sources.first { $0.bookSourceUrl == book.origin }) }
                                             if book.id != displayedBooks.last?.id {
                                                 Rectangle().fill(ReadingTheme.separator).frame(height: 0.5)
                                                     .padding(.leading, bookshelfLayout == "compact" ? 54 : 66)
@@ -274,11 +292,48 @@ private struct BookshelfView: View {
                     .padding(.bottom, 32)
                     .animation(.easeOut(duration: 0.3), value: library.loadState)
                 }
-                .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity)
+                }
+
+                if let book = openingBook, isAnimatingCover {
+                    let coverWidth = min(geometry.size.width * 0.68, 280)
+                    BookCoverArtwork(
+                        title: book.name,
+                        author: book.author,
+                        remoteURL: book.coverUrl,
+                        width: coverWidth,
+                        height: coverWidth / 0.70
+                    )
+                    .matchedGeometryEffect(id: book.bookUrl, in: coverAnimationNamespace, isSource: true)
+                    .shadow(color: .black.opacity(0.24), radius: 24, x: 0, y: 14)
+                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                    .zIndex(10)
+                }
+
+                NavigationLink(isActive: $isOpeningDestination) {
+                    if let book = openingBook {
+                        BookshelfBookDestination(book: book, source: openingSource)
+                    } else {
+                        EmptyView()
+                    }
+                } label: {
+                    EmptyView()
+                }
+                .hidden()
+                .accessibilityHidden(true)
             }
         }
         .background(ReadingTheme.canvas)
         .navigationBarHidden(true)
+        .onChange(of: isOpeningDestination) { isActive in
+            if !isActive {
+                openingBook = nil
+                openingSource = nil
+                isAnimatingCover = false
+            }
+        }
         .refreshable {
             guard selectedGroup.enableRefresh else { return }
             await library.checkForUpdates(sources: sources.sources, group: selectedGroup)
@@ -319,6 +374,19 @@ private struct BookshelfView: View {
             Button("好") { library.clearUpdateMessage() }
         } message: {
             Text(library.updateMessage ?? "")
+        }
+    }
+
+    private func beginOpening(_ book: Book, source: BookSource?) {
+        guard openingBook == nil, !isOpeningDestination else { return }
+        openingBook = book
+        openingSource = source
+        withAnimation(.spring(response: 0.48, dampingFraction: 0.86)) {
+            isAnimatingCover = true
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(520))
+            isOpeningDestination = true
         }
     }
 
@@ -491,16 +559,29 @@ private struct BookshelfBookLink: View {
     let book: Book
     let compact: Bool
     let grid: Bool
+    let animationNamespace: Namespace.ID
+    let isAnimatingCover: Bool
+    let onOpen: () -> Void
     @State private var showsGroupSelector = false
 
     private var source: BookSource? { sources.sources.first { $0.bookSourceUrl == book.origin } }
 
     var body: some View {
-        NavigationLink {
-            BookshelfBookDestination(book: book, source: source)
-        } label: {
-            if grid { BookshelfGridItem(book: book) }
-            else { BookshelfRow(book: book, compact: compact) }
+        Button(action: onOpen) {
+            if grid {
+                BookshelfGridItem(
+                    book: book,
+                    animationNamespace: animationNamespace,
+                    isAnimatingCover: isAnimatingCover
+                )
+            } else {
+                BookshelfRow(
+                    book: book,
+                    compact: compact,
+                    animationNamespace: animationNamespace,
+                    isAnimatingCover: isAnimatingCover
+                )
+            }
         }
         .buttonStyle(.plain)
         .contextMenu {
@@ -518,11 +599,14 @@ private struct BookshelfBookLink: View {
         .sheet(isPresented: $showsGroupSelector) {
             BookGroupSelectView(book: book).environmentObject(library)
         }
+        .accessibilityLabel("打开书籍，\(book.name)")
     }
 }
 
 private struct BookshelfGridItem: View {
     let book: Book
+    let animationNamespace: Namespace.ID
+    let isAnimatingCover: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -534,6 +618,8 @@ private struct BookshelfGridItem: View {
                     width: geometry.size.width,
                     height: geometry.size.height
                 )
+                .matchedGeometryEffect(id: book.bookUrl, in: animationNamespace, isSource: !isAnimatingCover)
+                .opacity(isAnimatingCover ? 0 : 1)
             }
             .aspectRatio(0.70, contentMode: .fit)
             .frame(maxWidth: 180)
@@ -923,6 +1009,8 @@ struct BookshelfReadView: View {
 private struct BookshelfRow: View {
     let book: Book
     var compact = false
+    let animationNamespace: Namespace.ID
+    let isAnimatingCover: Bool
     @ScaledMetric(relativeTo: .body) private var coverWidth = 52
 
     private var readingPosition: String {
@@ -944,6 +1032,8 @@ private struct BookshelfRow: View {
                 width: compact ? 40 : coverWidth,
                 height: compact ? 56 : coverWidth * 1.42
             )
+            .matchedGeometryEffect(id: book.bookUrl, in: animationNamespace, isSource: !isAnimatingCover)
+            .opacity(isAnimatingCover ? 0 : 1)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(book.name)
