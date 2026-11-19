@@ -177,8 +177,11 @@ final class BookLibraryModel: ObservableObject {
                 return
             }
 
-            if booksGeneration == bookSaveGeneration, sourceSwitchSaveTask == nil {
-                books = loadedBooks
+            let pathRestore = await restoredLocalBookPaths(in: loadedBooks)
+            guard generation == loadGeneration else { return }
+            let canRestoreBookPaths = booksGeneration == bookSaveGeneration && sourceSwitchSaveTask == nil
+            if canRestoreBookPaths {
+                books = pathRestore.books
                 persistedBooks = loadedBooks
             }
 
@@ -190,6 +193,22 @@ final class BookLibraryModel: ObservableObject {
                     let defaultGroups = [BookGroup(groupId: BookGroup.idAll, groupName: "全部", order: 0)]
                     groups = defaultGroups
                     defaultGroupsToPersist = defaultGroups
+                }
+            }
+
+            // Persist repaired file URLs before restoring EPUB covers or opening readers.
+            if canRestoreBookPaths, !pathRestore.replacements.isEmpty {
+                if await persist(pathRestore.books) {
+                    for replacement in pathRestore.replacements {
+                        if let pending = pendingProgress.removeValue(forKey: replacement.old) {
+                            if let current = pendingProgress[replacement.new], current.durChapterTime > pending.durChapterTime {
+                                continue
+                            }
+                            pendingProgress[replacement.new] = pending
+                        }
+                    }
+                    persistPendingProgress()
+                    await cleanupRemovedBooks(Set(pathRestore.replacements.map(\.old)))
                 }
             }
 
@@ -219,6 +238,35 @@ final class BookLibraryModel: ObservableObject {
             }
             if !wasLoaded { loadState = .failed }
         }
+    }
+
+    private func restoredLocalBookPaths(in storedBooks: [Book]) async -> (books: [Book], replacements: [(old: String, new: String)]) {
+        guard let files = try? await localFiles.list(), !files.isEmpty else {
+            return (storedBooks, [])
+        }
+
+        let filesByName = files.reduce(into: [String: URL]()) { result, file in
+            if result[file.url.lastPathComponent] == nil {
+                result[file.url.lastPathComponent] = file.url
+            }
+        }
+        var restored = storedBooks
+        var replacements: [(old: String, new: String)] = []
+
+        for index in restored.indices where restored[index].origin == "local" {
+            let book = restored[index]
+            guard let oldURL = URL(string: book.bookUrl), oldURL.isFileURL,
+                  !FileManager.default.fileExists(atPath: oldURL.path) else { continue }
+            let filename = book.originName.isEmpty ? oldURL.lastPathComponent : book.originName
+            guard let currentURL = filesByName[filename] else { continue }
+
+            let newURL = currentURL.absoluteString
+            guard newURL != book.bookUrl else { continue }
+            restored[index].bookUrl = newURL
+            replacements.append((old: book.bookUrl, new: newURL))
+        }
+
+        return (restored, replacements)
     }
 
     func contains(_ book: Book) -> Bool {
