@@ -275,12 +275,39 @@ struct ReadingProgressLine: View {
     }
 }
 
+@MainActor
 struct BookCoverArtwork: View {
     let title: String
     var author: String = ""
     var remoteURL: String?
     var width: CGFloat = 68
     var height: CGFloat = 96
+
+    @State private var remoteImage: UIImage?
+
+    init(
+        title: String,
+        author: String = "",
+        remoteURL: String? = nil,
+        width: CGFloat = 68,
+        height: CGFloat = 96
+    ) {
+        self.title = title
+        self.author = author
+        self.remoteURL = remoteURL
+        self.width = width
+        self.height = height
+
+        if let remoteURL,
+           !remoteURL.hasPrefix("data:image/"),
+           let url = URL(string: remoteURL) {
+            _remoteImage = State(
+                initialValue: BookCoverImageCache.shared.cachedImage(for: url)
+            )
+        } else {
+            _remoteImage = State(initialValue: nil)
+        }
+    }
 
     private var coverStyle: Int {
         switch title {
@@ -306,14 +333,10 @@ struct BookCoverArtwork: View {
                let data = Data(base64Encoded: String(remoteURL[remoteURL.index(after: comma)...])),
                let image = UIImage(data: data) {
                 Image(uiImage: image).resizable().scaledToFill()
+            } else if let remoteImage {
+                Image(uiImage: remoteImage).resizable().scaledToFill()
             } else {
-                AsyncImage(url: remoteURL.flatMap(URL.init(string:))) { phase in
-                    if case .success(let image) = phase {
-                        image.resizable().scaledToFill()
-                    } else {
-                        placeholder
-                    }
-                }
+                placeholder
             }
         }
         .frame(width: width, height: height)
@@ -326,6 +349,22 @@ struct BookCoverArtwork: View {
                 .strokeBorder(.black.opacity(0.08), lineWidth: 0.5)
         }
         .accessibilityHidden(true)
+        .task(id: remoteURL) {
+            guard let remoteURL,
+                  !remoteURL.hasPrefix("data:image/"),
+                  let url = URL(string: remoteURL) else {
+                remoteImage = nil
+                return
+            }
+
+            if let cachedImage = BookCoverImageCache.shared.cachedImage(for: url) {
+                remoteImage = cachedImage
+                return
+            }
+
+            remoteImage = nil
+            remoteImage = await BookCoverImageCache.shared.image(for: url)
+        }
     }
 
     private var placeholder: some View {
