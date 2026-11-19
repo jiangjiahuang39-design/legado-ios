@@ -165,6 +165,7 @@ private struct BookshelfView: View {
     @State private var showsBookOrder = false
     @State private var openingBook: Book?
     @State private var openingSource: BookSource?
+    @State private var openingPreparation: BookshelfReadViewModel?
     @State private var openingCoverID: String?
     @State private var openingCoverFrame: CGRect?
     @State private var coverFrames: [String: CGRect] = [:]
@@ -337,7 +338,11 @@ private struct BookshelfView: View {
 
                 NavigationLink(isActive: $isOpeningDestination) {
                     if let book = openingBook {
-                        BookshelfBookDestination(book: book, source: openingSource)
+                        BookshelfBookDestination(
+                            book: book,
+                            source: openingSource,
+                            preparation: openingPreparation
+                        )
                     } else {
                         EmptyView()
                     }
@@ -358,6 +363,7 @@ private struct BookshelfView: View {
             if !isActive {
                 openingBook = nil
                 openingSource = nil
+                openingPreparation = nil
                 openingCoverID = nil
                 openingCoverFrame = nil
                 isAnimatingCover = false
@@ -413,6 +419,15 @@ private struct BookshelfView: View {
         openingSource = source
         openingCoverID = animationID
         openingCoverFrame = coverFrames[animationID]
+
+        // Start catalog preparation immediately, in parallel with the cover animation.
+        let preparation = BookshelfReadViewModel()
+        openingPreparation = preparation
+        Task { @MainActor in
+            await preparation.load(book: book, source: source) { report in
+                await library.commitPreparedUpdate(requestedBook: book, report: report)
+            }
+        }
 
         // If the cover is not currently laid out (for example, an accessibility
         // layout omits the continue-reading cover), preserve the normal open flow.
@@ -698,12 +713,13 @@ private struct BookshelfGridItem: View {
 private struct BookshelfBookDestination: View {
     let book: Book
     let source: BookSource?
+    let preparation: BookshelfReadViewModel?
 
     var body: some View {
         if ProcessInfo.processInfo.arguments.contains("-uiDemo"), book.origin != "local" {
             ReaderView(demoBook: book, chapters: DemoContent.readerChapters, initialIndex: 0, content: DemoContent.readerText)
         } else {
-            BookshelfReadView(book: book, source: source)
+            BookshelfReadView(book: book, source: source, preparation: preparation)
         }
     }
 }
@@ -1030,7 +1046,13 @@ struct BookshelfReadView: View {
     let book: Book
     let source: BookSource?
     @EnvironmentObject private var library: BookLibraryModel
-    @StateObject private var model = BookshelfReadViewModel()
+    @StateObject private var model: BookshelfReadViewModel
+
+    init(book: Book, source: BookSource?, preparation: BookshelfReadViewModel? = nil) {
+        self.book = book
+        self.source = source
+        _model = StateObject(wrappedValue: preparation ?? BookshelfReadViewModel())
+    }
 
     var body: some View {
         Group {
