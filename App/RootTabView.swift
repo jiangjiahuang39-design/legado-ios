@@ -313,7 +313,7 @@ private struct BookshelfView: View {
                         width: coverWidth,
                         height: coverWidth / 0.70
                     )
-                    .matchedGeometryEffect(id: openingCoverID ?? book.bookUrl, in: coverAnimationNamespace, isSource: true)
+                    .matchedGeometryEffect(id: openingCoverID ?? book.bookUrl, in: coverAnimationNamespace, isSource: false)
                     .shadow(color: .black.opacity(0.24), radius: 24, x: 0, y: 14)
                     .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
                     .allowsHitTesting(false)
@@ -629,7 +629,7 @@ private struct BookshelfGridItem: View {
                     width: geometry.size.width,
                     height: geometry.size.height
                 )
-                .matchedGeometryEffect(id: book.bookUrl, in: animationNamespace, isSource: !isAnimatingCover)
+                .matchedGeometryEffect(id: book.bookUrl, in: animationNamespace, isSource: true)
                 .opacity(isAnimatingCover ? 0 : 1)
             }
             .aspectRatio(0.70, contentMode: .fit)
@@ -717,7 +717,7 @@ private struct ContinueReadingCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             if !dynamicTypeSize.isAccessibilitySize {
                 BookCoverArtwork(title: book.name, author: book.author, remoteURL: book.coverUrl, width: 94, height: 140)
-                    .matchedGeometryEffect(id: "\(book.bookUrl)::continue", in: animationNamespace, isSource: !isAnimatingCover)
+                    .matchedGeometryEffect(id: "\(book.bookUrl)::continue", in: animationNamespace, isSource: true)
                     .opacity(isAnimatingCover ? 0 : 1)
             }
         }
@@ -1047,7 +1047,7 @@ private struct BookshelfRow: View {
                 width: compact ? 40 : coverWidth,
                 height: compact ? 56 : coverWidth * 1.42
             )
-            .matchedGeometryEffect(id: book.bookUrl, in: animationNamespace, isSource: !isAnimatingCover)
+            .matchedGeometryEffect(id: book.bookUrl, in: animationNamespace, isSource: true)
             .opacity(isAnimatingCover ? 0 : 1)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
