@@ -125,6 +125,49 @@ struct LocalFileManagementTests {
         #expect(await chapters.saveCount == 0)
     }
 
+    @Test func restoresLocalBookPathFromCurrentManagedDirectoryAfterContainerChange() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let managed = root.appendingPathComponent("current-container/Library/LocalBooks", isDirectory: true)
+        try FileManager.default.createDirectory(at: managed, withIntermediateDirectories: true)
+        let currentFile = managed.appendingPathComponent("容器迁移.txt")
+        try Data("第一章\n迁移后仍可阅读的正文".utf8).write(to: currentFile)
+
+        let staleURL = root.appendingPathComponent("old-container/Library/LocalBooks/容器迁移.txt")
+        var storedBook = Book(bookUrl: staleURL.absoluteString, name: "容器迁移", origin: "local")
+        storedBook.originName = "容器迁移.txt"
+        storedBook.group = 8
+        storedBook.durChapterIndex = 2
+        storedBook.durChapterTitle = "原阅读章节"
+        storedBook.durChapterPos = 37
+        storedBook.durChapterTime = 1234
+        var readConfig = BookReadConfig()
+        readConfig.epubLocation = "saved-location"
+        storedBook.readConfig = readConfig
+
+        let repository = InMemoryBookRepository(books: [storedBook])
+        let model = BookLibraryModel(
+            repository: repository,
+            localDirectory: managed,
+            chapterRepository: InMemoryBookChapterRepository()
+        )
+
+        await model.load()
+
+        let restored = try #require(model.books.first)
+        #expect(restored.bookUrl == currentFile.absoluteString)
+        #expect(restored.originName == storedBook.originName)
+        #expect(restored.group == 8)
+        #expect(restored.durChapterIndex == 2)
+        #expect(restored.durChapterTitle == "原阅读章节")
+        #expect(restored.durChapterPos == 37)
+        #expect(restored.durChapterTime == 1234)
+        #expect(restored.readConfig?.epubLocation == "saved-location")
+        #expect(await repository.load() == [restored])
+        #expect(try LocalBookService().loadChapters(book: restored).chapters.count == 1)
+        #expect(model.errorMessage == nil)
+    }
+
     @Test func pickedTXTImportsButJSONFilesCannotBecomeLocalBooks() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
