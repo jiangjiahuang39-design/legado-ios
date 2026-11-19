@@ -445,7 +445,7 @@ private struct BookshelfView: View {
         // If the cover is not currently laid out (for example, an accessibility
         // layout omits the continue-reading cover), preserve the normal open flow.
         guard openingCoverFrame != nil else {
-            isOpeningDestination = true
+            openDestinationWithoutNavigationAnimation()
             return
         }
 
@@ -456,6 +456,17 @@ private struct BookshelfView: View {
                 isAnimatingCover = true
             }
             try? await Task.sleep(nanoseconds: 520_000_000)
+            openDestinationWithoutNavigationAnimation()
+        }
+    }
+
+    // Keep the cover animation independent from the system navigation push.
+    // This transaction disables only the NavigationStack transition triggered
+    // by the destination state change.
+    private func openDestinationWithoutNavigationAnimation() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
             isOpeningDestination = true
         }
     }
