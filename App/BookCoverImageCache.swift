@@ -34,24 +34,28 @@ final class BookCoverImageCache {
         )
     }
 
-    /// Returns a cached image when available; otherwise downloads and stores it.
-    /// Concurrent requests for the same URL share one download task.
-    func image(for url: URL) async -> UIImage? {
+    /// Returns an image already present in memory without starting a request.
+    /// This lets a newly-created cover view display a memory-cached image on its first render.
+    func cachedImage(for url: URL) -> UIImage? {
         let key = url.absoluteString
 
         if let cachedImage = memoryCache.object(forKey: key as NSString) {
             return cachedImage
         }
 
-        let diskURL = cacheFileURL(for: key)
-        if let diskImage = UIImage(contentsOfFile: diskURL.path) {
-            memoryCache.setObject(
-                diskImage,
-                forKey: key as NSString,
-                cost: imageCost(diskImage)
-            )
-            return diskImage
+        return nil
+    }
+
+    /// Returns a cached image when available; otherwise downloads and stores it.
+    /// Concurrent requests for the same URL share one download task.
+    func image(for url: URL) async -> UIImage? {
+        let key = url.absoluteString
+
+        if let cachedImage = cachedImage(for: url) {
+            return cachedImage
         }
+
+        let diskURL = cacheFileURL(for: key)
 
         if let existingTask = inFlightTasks[key] {
             guard let data = await existingTask.value else { return nil }
@@ -59,6 +63,16 @@ final class BookCoverImageCache {
         }
 
         let task = Task<Data?, Never> {
+            // Read the disk cache away from the main actor so a cold bookshelf
+            // does not block scrolling while cover files are opened.
+            let diskData = await Task.detached(priority: .utility) {
+                try? Data(contentsOf: diskURL)
+            }.value
+
+            if let diskData, UIImage(data: diskData) != nil {
+                return diskData
+            }
+
             do {
                 let (data, response) = try await URLSession.shared.data(from: url)
                 if let response = response as? HTTPURLResponse,
@@ -66,7 +80,9 @@ final class BookCoverImageCache {
                     return nil
                 }
 
-                try? data.write(to: diskURL, options: .atomic)
+                await Task.detached(priority: .utility) {
+                    try? data.write(to: diskURL, options: .atomic)
+                }.value
                 return data
             } catch {
                 return nil
