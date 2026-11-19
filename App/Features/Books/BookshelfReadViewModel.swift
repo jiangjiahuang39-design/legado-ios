@@ -9,6 +9,8 @@ final class BookshelfReadViewModel: ObservableObject {
     @Published private(set) var resolvedBook: Book?
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
+    private(set) var preparedReaderModel: ReaderViewModel?
+
     private let localService: LocalBookService
     private let updateCoordinator: BookUpdateCoordinator
 
@@ -57,6 +59,34 @@ final class BookshelfReadViewModel: ObservableObject {
         } else {
             errorMessage = report.diagnostics.first?.message ?? "目录刷新后仍与阅读进度不一致，请稍后重试。"
         }
+    }
+
+    /// Creates the reader model once the chapter list and resolved book are ready.
+    /// The returned instance can be passed directly to ReaderView for reuse.
+    func makeReaderModel(source: BookSource?) -> ReaderViewModel? {
+        guard !chapters.isEmpty, let resolvedBook else { return nil }
+        if let preparedReaderModel {
+            return preparedReaderModel
+        }
+
+        let index = resolvedBook.durChapterIndex
+        let model: ReaderViewModel
+        if let source {
+            model = ReaderViewModel(
+                book: resolvedBook,
+                chapters: chapters,
+                initialIndex: index,
+                source: source
+            )
+        } else {
+            model = ReaderViewModel(
+                book: resolvedBook,
+                chapters: chapters,
+                initialIndex: index
+            )
+        }
+        preparedReaderModel = model
+        return model
     }
 
     private func matchesReadingProgress(_ book: Book, chapters: [BookChapter]) -> Bool {
