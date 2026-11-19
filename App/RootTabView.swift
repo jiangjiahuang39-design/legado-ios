@@ -9,8 +9,67 @@ private struct BookshelfCoverFramePreferenceKey: PreferenceKey {
     }
 }
 
+@MainActor
+private final class BookshelfCoverTransition: ObservableObject {
+    @Published var book: Book?
+    @Published var sourceFrame: CGRect?
+    @Published var isAnimating = false
+    @Published var opacity = 1.0
+
+    func prepare(book: Book, sourceFrame: CGRect) {
+        self.book = book
+        self.sourceFrame = sourceFrame
+        isAnimating = false
+        opacity = 1
+    }
+
+    func reset() {
+        book = nil
+        sourceFrame = nil
+        isAnimating = false
+        opacity = 1
+    }
+}
+
+private struct BookshelfCoverTransitionOverlay: View {
+    @ObservedObject var transition: BookshelfCoverTransition
+
+    var body: some View {
+        GeometryReader { geometry in
+            if let book = transition.book, let sourceFrame = transition.sourceFrame {
+                let globalFrame = geometry.frame(in: .global)
+                let coverWidth = min(geometry.size.width * 0.68, 280)
+                let coverHeight = coverWidth / 0.70
+                BookCoverArtwork(
+                    title: book.name,
+                    author: book.author,
+                    remoteURL: book.coverUrl,
+                    width: coverWidth,
+                    height: coverHeight
+                )
+                .frame(width: coverWidth, height: coverHeight)
+                .scaleEffect(
+                    x: transition.isAnimating ? 1 : sourceFrame.width / coverWidth,
+                    y: transition.isAnimating ? 1 : sourceFrame.height / coverHeight
+                )
+                .shadow(color: .black.opacity(0.24), radius: 24, x: 0, y: 14)
+                .position(
+                    x: transition.isAnimating ? geometry.size.width / 2 : sourceFrame.midX - globalFrame.minX,
+                    y: transition.isAnimating ? geometry.size.height / 2 : sourceFrame.midY - globalFrame.minY
+                )
+                .opacity(transition.opacity)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+                .zIndex(100)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 struct RootTabView: View {
     @EnvironmentObject private var sourceLibrary: SourceLibraryModel
+    @StateObject private var bookshelfCoverTransition = BookshelfCoverTransition()
     private enum Tab: Hashable { case bookshelf, explore, statistics, my }
     @State private var selection: Tab
     @State private var showsDemoReader = false
@@ -63,7 +122,7 @@ struct RootTabView: View {
                     } else if requestedDemoPage == "rss-photo" {
                         RSSPhotoView(value: "data:image/png;base64,", source: RssSource(sourceUrl: "https://appearance.invalid", sourceName: "图片外观检查"))
                     } else {
-                        BookshelfView()
+                        BookshelfView(coverTransition: bookshelfCoverTransition)
                     }
                 }
                 .readingNavigationDestination(isPresented: $showsDemoReader) {
@@ -79,6 +138,9 @@ struct RootTabView: View {
                     didOpenDemoReader = true
                     showsDemoReader = ProcessInfo.processInfo.arguments.contains("-uiDemoReader")
                 }
+            }
+            .overlay {
+                BookshelfCoverTransitionOverlay(transition: bookshelfCoverTransition)
             }
                 .tabItem { Label("书架", systemImage: selection == .bookshelf ? "book.fill" : "book").environment(\.symbolVariants, .none) }
                 .tag(Tab.bookshelf)
@@ -155,6 +217,7 @@ struct RootTabView: View {
 }
 
 private struct BookshelfView: View {
+    @ObservedObject var coverTransition: BookshelfCoverTransition
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var library: BookLibraryModel
     @EnvironmentObject private var sources: SourceLibraryModel
@@ -312,31 +375,6 @@ private struct BookshelfView: View {
                     .frame(maxWidth: .infinity)
                 }
 
-                if let book = openingBook, let sourceFrame = openingCoverFrame {
-                    let coverWidth = min(geometry.size.width * 0.68, 280)
-                    let coverHeight = coverWidth / 0.70
-                    BookCoverArtwork(
-                        title: book.name,
-                        author: book.author,
-                        remoteURL: book.coverUrl,
-                        width: coverWidth,
-                        height: coverHeight
-                    )
-                    .frame(width: coverWidth, height: coverHeight)
-                    .scaleEffect(
-                        x: isAnimatingCover ? 1 : sourceFrame.width / coverWidth,
-                        y: isAnimatingCover ? 1 : sourceFrame.height / coverHeight
-                    )
-                    .shadow(color: .black.opacity(0.24), radius: 24, x: 0, y: 14)
-                    .position(
-                        x: isAnimatingCover ? geometry.size.width / 2 : sourceFrame.midX,
-                        y: isAnimatingCover ? geometry.size.height / 2 : sourceFrame.midY
-                    )
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-                    .zIndex(10)
-                }
-
                 NavigationLink(isActive: $isOpeningDestination) {
                     if let book = openingBook {
                         BookshelfBookDestination(
@@ -368,6 +406,7 @@ private struct BookshelfView: View {
                 openingCoverID = nil
                 openingCoverFrame = nil
                 isAnimatingCover = false
+                coverTransition.reset()
             }
         }
         .refreshable {
@@ -429,9 +468,8 @@ private struct BookshelfView: View {
                 await library.commitPreparedUpdate(requestedBook: book, report: report)
             }
 
-            // Once the catalog is ready, prepare the same reader model that
-            // ReaderView will receive. Loading the current chapter here lets
-            // the cover transition overlap with the first content request.
+            // Reuse the same reader model in the destination and prepare only
+            // the current chapter while the transition is in progress.
             guard let readerModel = preparation.makeReaderModel(source: source) else { return }
             let isLocalEPUB = book.origin == "local"
                 && URL(string: book.bookUrl)?.pathExtension.lowercased() == "epub"
@@ -442,32 +480,29 @@ private struct BookshelfView: View {
             )
         }
 
-        // If the cover is not currently laid out (for example, an accessibility
-        // layout omits the continue-reading cover), preserve the normal open flow.
-        guard openingCoverFrame != nil else {
-            openDestinationWithoutNavigationAnimation()
+        // Without a measured cover frame, keep the normal system navigation flow.
+        guard let sourceFrame = openingCoverFrame else {
+            isOpeningDestination = true
             return
         }
 
-        // Let the overlay appear at the measured source frame before animating it.
+        coverTransition.prepare(book: book, sourceFrame: sourceFrame)
+
+        // Let the outer overlay render at the source position before starting
+        // the cover movement and the native navigation push together.
         Task { @MainActor in
             await Task.yield()
             withAnimation(.spring(response: 0.48, dampingFraction: 0.86)) {
+                coverTransition.isAnimating = true
                 isAnimatingCover = true
             }
-            try? await Task.sleep(nanoseconds: 520_000_000)
-            openDestinationWithoutNavigationAnimation()
-        }
-    }
-
-    // Keep the cover animation independent from the system navigation push.
-    // This transaction disables only the NavigationStack transition triggered
-    // by the destination state change.
-    private func openDestinationWithoutNavigationAnimation() {
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
             isOpeningDestination = true
+
+            // Keep the cover above the pushed reader, then fade it away.
+            try? await Task.sleep(nanoseconds: 520_000_000)
+            withAnimation(.easeOut(duration: 0.22)) {
+                coverTransition.opacity = 0
+            }
         }
     }
 
@@ -699,7 +734,7 @@ private struct BookshelfGridItem: View {
                     GeometryReader { proxy in
                         Color.clear.preference(
                             key: BookshelfCoverFramePreferenceKey.self,
-                            value: [book.bookUrl: proxy.frame(in: .named("bookshelf"))]
+                            value: [book.bookUrl: proxy.frame(in: .global)]
                         )
                     }
                 }
@@ -794,7 +829,7 @@ private struct ContinueReadingCard: View {
                         GeometryReader { proxy in
                             Color.clear.preference(
                                 key: BookshelfCoverFramePreferenceKey.self,
-                                value: ["\(book.bookUrl)::continue": proxy.frame(in: .named("bookshelf"))]
+                                value: ["\(book.bookUrl)::continue": proxy.frame(in: .global)]
                             )
                         }
                     }
@@ -1128,7 +1163,7 @@ private struct BookshelfRow: View {
                 GeometryReader { proxy in
                     Color.clear.preference(
                         key: BookshelfCoverFramePreferenceKey.self,
-                        value: [book.bookUrl: proxy.frame(in: .named("bookshelf"))]
+                        value: [book.bookUrl: proxy.frame(in: .global)]
                     )
                 }
             }
