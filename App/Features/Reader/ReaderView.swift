@@ -130,6 +130,12 @@ struct ReaderView: View {
     @AppStorage("clickActionBottomRight") private var clickActionBR = 1
 
 
+    init(model: ReaderViewModel) {
+        _pageAnimation = State(initialValue: model.book.readConfig?.pageAnim.flatMap { $0 >= 0 ? $0 : nil }
+            ?? Self.globalPageAnimation())
+        _model = StateObject(wrappedValue: model)
+    }
+
     init(book: Book, chapters: [BookChapter], initialIndex: Int, source: BookSource) {
         _pageAnimation = State(initialValue: book.readConfig?.pageAnim.flatMap { $0 >= 0 ? $0 : nil }
             ?? Self.globalPageAnimation())
