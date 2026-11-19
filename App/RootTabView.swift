@@ -158,6 +158,7 @@ private struct BookshelfView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var library: BookLibraryModel
     @EnvironmentObject private var sources: SourceLibraryModel
+    @EnvironmentObject private var replaceRules: ReplaceRuleLibraryModel
     @State private var showsLocalImporter = false
     @State private var pendingLocalFiles: [LocalBookImportFile] = []
     @State private var selectedGroupID = BookGroup.idAll
@@ -427,6 +428,18 @@ private struct BookshelfView: View {
             await preparation.load(book: book, source: source) { report in
                 await library.commitPreparedUpdate(requestedBook: book, report: report)
             }
+
+            // Once the catalog is ready, prepare the same reader model that
+            // ReaderView will receive. Loading the current chapter here lets
+            // the cover transition overlap with the first content request.
+            guard let readerModel = preparation.makeReaderModel(source: source) else { return }
+            let isLocalEPUB = book.origin == "local"
+                && URL(string: book.bookUrl)?.pathExtension.lowercased() == "epub"
+            guard !isLocalEPUB else { return }
+            await readerModel.load(
+                rules: readerModel.usesReplaceRules ? replaceRules.rules : [],
+                prefetchNextChapter: false
+            )
         }
 
         // If the cover is not currently laid out (for example, an accessibility
@@ -1056,17 +1069,9 @@ struct BookshelfReadView: View {
 
     var body: some View {
         Group {
-            if !model.chapters.isEmpty, let resolvedBook = model.resolvedBook {
-                if let source {
-                    ReaderView(
-                        book: resolvedBook,
-                        chapters: model.chapters,
-                        initialIndex: resolvedBook.durChapterIndex,
-                        source: source
-                    )
-                } else {
-                    ReaderView(book: resolvedBook, chapters: model.chapters, initialIndex: resolvedBook.durChapterIndex)
-                }
+            if !model.chapters.isEmpty, model.resolvedBook != nil,
+               let readerModel = model.makeReaderModel(source: source) {
+                ReaderView(model: readerModel)
             } else if model.isLoading {
                 ProgressView("正在打开…")
             } else if let errorMessage = model.errorMessage {
