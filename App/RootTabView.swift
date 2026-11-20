@@ -380,21 +380,20 @@ private struct BookshelfView: View {
                     .frame(maxWidth: .infinity)
                 }
 
-                NavigationLink(isActive: $isOpeningDestination) {
-                    if let book = openingBook {
-                        BookshelfBookDestination(
-                            book: book,
-                            source: openingSource,
-                            preparation: openingPreparation
-                        )
-                    } else {
-                        EmptyView()
-                    }
-                } label: {
-                    EmptyView()
+                // Present the reader above the bookshelf content instead of
+                // pushing it through the parent NavigationStack. The existing
+                // cover-transition overlay remains above this reader layer.
+                if isOpeningDestination, let book = openingBook {
+                    BookshelfBookDestination(
+                        book: book,
+                        source: openingSource,
+                        preparation: openingPreparation,
+                        onClose: closeReader
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(ReadingTheme.canvas)
+                    .zIndex(50)
                 }
-                .hidden()
-                .accessibilityHidden(true)
             }
             .coordinateSpace(name: "bookshelf")
             .onPreferenceChange(BookshelfCoverFramePreferenceKey.self) { frames in
@@ -457,6 +456,10 @@ private struct BookshelfView: View {
         }
     }
 
+    private func closeReader() {
+        isOpeningDestination = false
+    }
+
     private func beginOpening(_ book: Book, source: BookSource?, animationID: String) {
         guard openingBook == nil, !isOpeningDestination else { return }
 
@@ -485,7 +488,7 @@ private struct BookshelfView: View {
             )
         }
 
-        // Without a measured cover frame, keep the normal system navigation flow.
+        // Without a measured cover frame, present the reader without a cover transition.
         guard let sourceFrame = openingCoverFrame else {
             isOpeningDestination = true
             return
@@ -494,7 +497,7 @@ private struct BookshelfView: View {
         coverTransition.prepare(book: book, sourceFrame: sourceFrame)
 
         // Let the outer overlay render at the source position before starting
-        // the cover movement and the native navigation push together.
+        // the cover movement and the reader overlay together.
         Task { @MainActor in
             await Task.yield()
             withAnimation(.spring(response: 0.48, dampingFraction: 0.86)) {
@@ -780,12 +783,19 @@ private struct BookshelfBookDestination: View {
     let book: Book
     let source: BookSource?
     let preparation: BookshelfReadViewModel?
+    let onClose: () -> Void
 
     var body: some View {
         if ProcessInfo.processInfo.arguments.contains("-uiDemo"), book.origin != "local" {
-            ReaderView(demoBook: book, chapters: DemoContent.readerChapters, initialIndex: 0, content: DemoContent.readerText)
+            ReaderView(
+                demoBook: book,
+                chapters: DemoContent.readerChapters,
+                initialIndex: 0,
+                content: DemoContent.readerText,
+                onClose: onClose
+            )
         } else {
-            BookshelfReadView(book: book, source: source, preparation: preparation)
+            BookshelfReadView(book: book, source: source, preparation: preparation, onClose: onClose)
         }
     }
 }
@@ -1111,12 +1121,20 @@ private struct EmptyBookshelfHero: View {
 struct BookshelfReadView: View {
     let book: Book
     let source: BookSource?
+    private let onClose: (() -> Void)?
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var library: BookLibraryModel
     @StateObject private var model: BookshelfReadViewModel
 
-    init(book: Book, source: BookSource?, preparation: BookshelfReadViewModel? = nil) {
+    init(
+        book: Book,
+        source: BookSource?,
+        preparation: BookshelfReadViewModel? = nil,
+        onClose: (() -> Void)? = nil
+    ) {
         self.book = book
         self.source = source
+        self.onClose = onClose
         _model = StateObject(wrappedValue: preparation ?? BookshelfReadViewModel())
     }
 
@@ -1124,20 +1142,53 @@ struct BookshelfReadView: View {
         Group {
             if !model.chapters.isEmpty, model.resolvedBook != nil,
                let readerModel = model.makeReaderModel(source: source) {
-                ReaderView(model: readerModel)
+                ReaderView(model: readerModel, onClose: onClose)
             } else if model.isLoading {
-                ProgressView("正在打开…")
+                openingStateView {
+                    ProgressView("正在打开…")
+                }
             } else if let errorMessage = model.errorMessage {
-                ReadingUnavailableView("无法打开书籍", systemImage: "book.closed", description: Text(errorMessage))
+                openingStateView {
+                    ReadingUnavailableView("无法打开书籍", systemImage: "book.closed", description: Text(errorMessage))
+                }
             } else {
-                ProgressView("正在打开…")
+                openingStateView {
+                    ProgressView("正在打开…")
+                }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ReadingTheme.canvas)
         .task {
             await model.load(book: book, source: source) { report in
                 await library.commitPreparedUpdate(requestedBook: book, report: report)
             }
         }
+    }
+
+    private func openingStateView<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(spacing: 16) {
+            if onClose != nil {
+                HStack {
+                    Button(action: close) {
+                        Image(systemName: "chevron.backward")
+                            .font(.body.weight(.semibold))
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("返回书架")
+                    Spacer()
+                }
+            }
+            Spacer()
+            content()
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+    }
+
+    private func close() {
+        if let onClose { onClose() } else { dismiss() }
     }
 }
 
