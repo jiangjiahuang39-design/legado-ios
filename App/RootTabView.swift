@@ -564,7 +564,7 @@ private struct BookshelfView: View {
             await Task.yield()
             isAnimatingCover = true
             isOpeningDestination = true
-            withAnimation(.timingCurve(0.22, 0.76, 0.18, 1.0, duration: 1.05)) {
+            withAnimation(.timingCurve(0.30, 0.30, 0.18, 1.0, duration: 1.15)) {
                 coverTransition.progress = 1
             }
         }
