@@ -28,6 +28,17 @@ private final class BookshelfCoverTransition: ObservableObject {
     }
 }
 
+private struct BookshelfReaderRevealMask: Shape {
+    let revealRect: CGRect
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.addRect(rect)
+        path.addRect(revealRect.intersection(rect))
+        return path
+    }
+}
+
 private struct BookshelfCoverTransitionOverlay: View {
     @ObservedObject var transition: BookshelfCoverTransition
     @AppStorage("readerTheme") private var readerTheme = "wechat"
@@ -77,22 +88,18 @@ private struct BookshelfCoverTransitionOverlay: View {
                 let coverFade = 1 - min(1, max(0, (rawProgress - 0.88) / 0.12))
 
                 ZStack(alignment: .leading) {
-                    // The page surface expands with the book and uses the
-                    // exact same preset color as ReaderView.
-                    Rectangle()
-                        .fill(readerBackgroundColor)
-                        .overlay(alignment: .trailing) {
+                    // Keep the real ReaderView underneath the transition. This
+                    // even-odd mask covers everything except the expanding page
+                    // area, so the actual reader is revealed progressively
+                    // instead of being replaced by a simulated blank rectangle.
+                    BookshelfReaderRevealMask(revealRect: expandedRect)
+                        .fill(readerBackgroundColor, style: FillStyle(eoFill: true))
+                        .overlay(alignment: .leading) {
                             Rectangle()
                                 .fill(Color.black.opacity(0.08 * (1 - boundsProgress)))
                                 .frame(width: max(1, expandedRect.width * 0.012))
+                                .offset(x: expandedRect.maxX - max(1, expandedRect.width * 0.012))
                         }
-                        .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
-                        .shadow(
-                            color: .black.opacity(0.12 * (1 - boundsProgress)),
-                            radius: 12 * (1 - boundsProgress),
-                            x: 5,
-                            y: 4
-                        )
 
                     // The cover shares the expanding geometry and rotates
                     // around its moving leading edge (the book spine).
