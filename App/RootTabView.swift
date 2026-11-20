@@ -83,8 +83,9 @@ private struct BookshelfCoverTransitionOverlay: View {
                         y: transition.isAnimating ? 1 : sourceFrame.height / coverHeight
                     )
                     .scaleEffect(transition.exitScale, anchor: .center)
-                    // The leading edge acts as the book spine. Positive Y-axis
-                    // rotation swings the right edge away from the viewer.
+                    // The leading edge acts as the book spine. Negative Y-axis
+                    // rotation brings the right edge toward the viewer, then
+                    // swings the cover outward to the left of the spine.
                     .rotation3DEffect(
                         .degrees(transition.openingAngle),
                         axis: (x: 0, y: 1, z: 0),
@@ -545,7 +546,7 @@ private struct BookshelfView: View {
             try? await Task.sleep(nanoseconds: 420_000_000)
             withAnimation(.easeInOut(duration: 0.52)) {
                 coverTransition.pageOpacity = 1
-                coverTransition.openingAngle = 104
+                coverTransition.openingAngle = -104
             }
 
             // Continue the opening motion while the cover exits. The page
@@ -553,7 +554,7 @@ private struct BookshelfView: View {
             try? await Task.sleep(nanoseconds: 300_000_000)
             withAnimation(.easeInOut(duration: 0.38)) {
                 coverTransition.exitScale = 1.18
-                coverTransition.openingAngle = 122
+                coverTransition.openingAngle = -122
                 coverTransition.opacity = 0
             }
         }
