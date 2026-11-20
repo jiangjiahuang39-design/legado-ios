@@ -15,12 +15,14 @@ private final class BookshelfCoverTransition: ObservableObject {
     @Published var sourceFrame: CGRect?
     @Published var isAnimating = false
     @Published var opacity = 1.0
+    @Published var exitScale = 1.0
 
     func prepare(book: Book, sourceFrame: CGRect) {
         self.book = book
         self.sourceFrame = sourceFrame
         isAnimating = false
         opacity = 1
+        exitScale = 1
     }
 
     func reset() {
@@ -28,6 +30,7 @@ private final class BookshelfCoverTransition: ObservableObject {
         sourceFrame = nil
         isAnimating = false
         opacity = 1
+        exitScale = 1
     }
 }
 
@@ -52,6 +55,8 @@ private struct BookshelfCoverTransitionOverlay: View {
                     x: transition.isAnimating ? 1 : sourceFrame.width / coverWidth,
                     y: transition.isAnimating ? 1 : sourceFrame.height / coverHeight
                 )
+                // Continue enlarging the cover as it fades into the reader.
+                .scaleEffect(transition.exitScale, anchor: .center)
                 .shadow(color: .black.opacity(0.24), radius: 24, x: 0, y: 14)
                 .position(
                     x: transition.isAnimating ? geometry.size.width / 2 : sourceFrame.midX - globalFrame.minX,
@@ -502,6 +507,7 @@ private struct BookshelfView: View {
             // blends into the reader instead of disappearing after the push.
             try? await Task.sleep(nanoseconds: 300_000_000)
             withAnimation(.easeInOut(duration: 0.34)) {
+                coverTransition.exitScale = 1.28
                 coverTransition.opacity = 0
             }
         }
