@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 struct ReaderView: View {
     private var usesEPUBLayout = true
+    private var onClose: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -130,7 +131,8 @@ struct ReaderView: View {
     @AppStorage("clickActionBottomRight") private var clickActionBR = 1
 
 
-    init(model: ReaderViewModel) {
+    init(model: ReaderViewModel, onClose: (() -> Void)? = nil) {
+        self.onClose = onClose
         _pageAnimation = State(initialValue: model.book.readConfig?.pageAnim.flatMap { $0 >= 0 ? $0 : nil }
             ?? Self.globalPageAnimation())
         _model = StateObject(wrappedValue: model)
@@ -158,7 +160,14 @@ struct ReaderView: View {
         ))
     }
 
-    init(demoBook book: Book, chapters: [BookChapter], initialIndex: Int, content: String) {
+    init(
+        demoBook book: Book,
+        chapters: [BookChapter],
+        initialIndex: Int,
+        content: String,
+        onClose: (() -> Void)? = nil
+    ) {
+        self.onClose = onClose
         var readerChapters = chapters
         var readerInitialIndex = initialIndex
         var readerContent = content
@@ -212,7 +221,7 @@ struct ReaderView: View {
 
     var body: some View {
         if usesEPUBLayout, book.origin == "local", URL(string: book.bookUrl)?.pathExtension.lowercased() == "epub" {
-            EPUBReaderView(book: book, chapters: model.chapters, initialIndex: model.currentIndex)
+            EPUBReaderView(book: book, chapters: model.chapters, initialIndex: model.currentIndex, onClose: onClose)
         } else {
             textReaderBody
         }
@@ -839,6 +848,10 @@ struct ReaderView: View {
         .primary
     }
 
+    private func closeReader() {
+        if let onClose { onClose() } else { dismiss() }
+    }
+
     @ViewBuilder private var readerChromeBackground: some View {
         if resolvedStyle.id == "night" {
             Color(uiColor: .secondarySystemBackground)
@@ -862,7 +875,7 @@ struct ReaderView: View {
 
     private var readerTopChrome: some View {
         HStack(spacing: 4) {
-            readerChromeIconButton("chevron.backward", label: "返回") { dismiss() }
+            readerChromeIconButton("chevron.backward", label: "返回") { closeReader() }
             VStack(alignment: .leading, spacing: 3) {
                 Text(book.name)
                     .font(.subheadline.weight(.medium))
