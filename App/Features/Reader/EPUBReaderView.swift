@@ -153,6 +153,7 @@ final class EPUBReaderModel: ObservableObject, EPUBNavigatorDelegate {
 }
 
 struct EPUBReaderView: View {
+    private let onClose: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
@@ -171,8 +172,13 @@ struct EPUBReaderView: View {
     @AppStorage("epubPublisherStyles") private var publisherStyles = true
     @AppStorage("epubTheme") private var theme = "system"
 
-    init(book: Book, chapters: [BookChapter], initialIndex: Int) {
+    init(book: Book, chapters: [BookChapter], initialIndex: Int, onClose: (() -> Void)? = nil) {
+        self.onClose = onClose
         _model = StateObject(wrappedValue: EPUBReaderModel(book: book, chapters: chapters, initialIndex: initialIndex))
+    }
+
+    private func closeReader() {
+        if let onClose { onClose() } else { dismiss() }
     }
 
     private var preferences: EPUBPreferences {
@@ -191,7 +197,7 @@ struct EPUBReaderView: View {
                         Text("无法打开 EPUB").font(.headline)
                         Text(error).font(.footnote).foregroundStyle(.secondary)
                         Button("重试") { Task { await model.open(preferences: preferences) } }
-                        Button("返回书架") { dismiss() }
+                        Button("返回书架") { closeReader() }
                     }.padding()
                 } else {
                     ProgressView("正在打开 EPUB…")
@@ -249,7 +255,7 @@ struct EPUBReaderView: View {
 
     private var topBar: some View {
         HStack(spacing: 16) {
-            Button { saveProgress(); dismiss() } label: { Image(systemName: "chevron.left") }
+            Button { saveProgress(); closeReader() } label: { Image(systemName: "chevron.left") }
                 .accessibilityLabel("返回书架")
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.book.name).font(.subheadline.weight(.semibold)).lineLimit(1)
