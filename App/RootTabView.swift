@@ -498,9 +498,10 @@ private struct BookshelfView: View {
             }
             isOpeningDestination = true
 
-            // Keep the cover above the pushed reader, then fade it away.
-            try? await Task.sleep(nanoseconds: 520_000_000)
-            withAnimation(.easeOut(duration: 0.22)) {
+            // Begin fading near the end of the cover movement so the cover
+            // blends into the reader instead of disappearing after the push.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            withAnimation(.easeInOut(duration: 0.34)) {
                 coverTransition.opacity = 0
             }
         }
