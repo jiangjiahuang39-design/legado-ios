@@ -1,4 +1,3 @@
-
 name: iOS Unsigned IPA Build
 
 on:
@@ -39,9 +38,12 @@ jobs:
             build
 
       - name: Package unsigned IPA
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
         run: |
           APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/Legado.app"
           IPA_ROOT="$RUNNER_TEMP/IPA"
+          IPA_NAME="Legado-Unsigned-IPA-${BUILD_NUMBER}.ipa"
 
           if [ ! -d "$APP_PATH" ]; then
             echo "Error: Legado.app was not found"
@@ -53,20 +55,21 @@ jobs:
             "$APP_PATH/Info.plist")
 
           echo "Bundle Identifier: $BUNDLE_ID"
+          echo "Build Number: $BUILD_NUMBER"
 
           mkdir -p "$IPA_ROOT/Payload"
           cp -R "$APP_PATH" "$IPA_ROOT/Payload/"
 
           ditto -c -k --sequesterRsrc --keepParent \
             "$IPA_ROOT/Payload" \
-            "$RUNNER_TEMP/Legado-Unsigned.ipa"
+            "$RUNNER_TEMP/$IPA_NAME"
 
-          echo "Unsigned IPA created successfully"
+          echo "Unsigned IPA created successfully: $IPA_NAME"
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Legado-Unsigned-IPA
-          path: ${{ runner.temp }}/Legado-Unsigned.ipa
+          name: Legado-Unsigned-IPA-${{ github.run_number }}
+          path: ${{ runner.temp }}/Legado-Unsigned-IPA-${{ github.run_number }}.ipa
           if-no-files-found: error
           retention-days: 7
