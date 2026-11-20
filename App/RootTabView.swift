@@ -202,9 +202,6 @@ struct RootTabView: View {
                     showsDemoReader = ProcessInfo.processInfo.arguments.contains("-uiDemoReader")
                 }
             }
-            .overlay {
-                BookshelfCoverTransitionOverlay(transition: bookshelfCoverTransition)
-            }
                 .tabItem { Label("书架", systemImage: selection == .bookshelf ? "book.fill" : "book").environment(\.symbolVariants, .none) }
                 .tag(Tab.bookshelf)
 
@@ -261,6 +258,13 @@ struct RootTabView: View {
         }
         .tint(ReadingTheme.accent)
         .toggleStyle(SwitchToggleStyle(tint: ReadingTheme.toggleTint))
+        // Keep the transition above the entire TabView, including its tab bar.
+        // An overlay attached to an individual tab's NavigationStack is still
+        // underneath the system-managed tab bar.
+        .overlay {
+            BookshelfCoverTransitionOverlay(transition: bookshelfCoverTransition)
+                .zIndex(1_000)
+        }
     }
 
     private var requestedDemoPage: String? {
