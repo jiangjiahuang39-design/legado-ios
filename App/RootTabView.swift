@@ -13,95 +13,119 @@ private struct BookshelfCoverFramePreferenceKey: PreferenceKey {
 private final class BookshelfCoverTransition: ObservableObject {
     @Published var book: Book?
     @Published var sourceFrame: CGRect?
-    @Published var isAnimating = false
-    @Published var opacity = 1.0
-    @Published var exitScale = 1.0
-    @Published var openingAngle = 0.0
-    @Published var pageOpacity = 0.0
+    @Published var progress = 0.0
 
     func prepare(book: Book, sourceFrame: CGRect) {
         self.book = book
         self.sourceFrame = sourceFrame
-        isAnimating = false
-        opacity = 1
-        exitScale = 1
-        openingAngle = 0
-        pageOpacity = 0
+        progress = 0
     }
 
     func reset() {
         book = nil
         sourceFrame = nil
-        isAnimating = false
-        opacity = 1
-        exitScale = 1
-        openingAngle = 0
-        pageOpacity = 0
+        progress = 0
     }
 }
 
 private struct BookshelfCoverTransitionOverlay: View {
     @ObservedObject var transition: BookshelfCoverTransition
+    @AppStorage("readerTheme") private var readerTheme = "wechat"
+    @AppStorage("themeMode") private var themeMode = "0"
+
+    private var readerBackgroundColor: Color {
+        let style = themeMode == "3" ? ReaderStylePreset.eInk : ReaderStylePreset.resolve(readerTheme)
+        return Color(uiColor: style.background)
+    }
+
+    private func eased(_ value: CGFloat) -> CGFloat {
+        let t = min(max(value, 0), 1)
+        // Smooth acceleration and deceleration for the four independently
+        // interpolated edges of the expanding book surface.
+        return t * t * (3 - 2 * t)
+    }
+
+    private func interpolate(_ from: CGFloat, _ to: CGFloat, _ progress: CGFloat) -> CGFloat {
+        from + (to - from) * progress
+    }
 
     var body: some View {
         GeometryReader { geometry in
             if let book = transition.book, let sourceFrame = transition.sourceFrame {
                 let globalFrame = geometry.frame(in: .global)
-                let coverWidth = min(geometry.size.width * 0.68, 280)
-                let coverHeight = coverWidth / 0.70
-                let center = CGPoint(
-                    x: transition.isAnimating ? geometry.size.width / 2 : sourceFrame.midX - globalFrame.minX,
-                    y: transition.isAnimating ? geometry.size.height / 2 : sourceFrame.midY - globalFrame.minY
+                let startRect = sourceFrame.offsetBy(dx: -globalFrame.minX, dy: -globalFrame.minY)
+                let endRect = CGRect(origin: .zero, size: geometry.size)
+                let rawProgress = CGFloat(transition.progress)
+                let boundsProgress = eased(rawProgress)
+
+                // Each edge travels to its own screen boundary. This is not a
+                // center-scale animation, so books starting at either side of
+                // the shelf still finish flush with all four screen edges.
+                let expandedMinX = interpolate(startRect.minX, endRect.minX, boundsProgress)
+                let expandedMinY = interpolate(startRect.minY, endRect.minY, boundsProgress)
+                let expandedMaxX = interpolate(startRect.maxX, endRect.maxX, boundsProgress)
+                let expandedMaxY = interpolate(startRect.maxY, endRect.maxY, boundsProgress)
+                let expandedRect = CGRect(
+                    x: expandedMinX,
+                    y: expandedMinY,
+                    width: max(1, expandedMaxX - expandedMinX),
+                    height: max(1, expandedMaxY - expandedMinY)
                 )
 
+                let coverRotationProgress = eased(max(0, (rawProgress - 0.04) / 0.96))
+                let coverAngle = -118 * coverRotationProgress
+                let coverFade = 1 - min(1, max(0, (rawProgress - 0.88) / 0.12))
+
                 ZStack(alignment: .leading) {
-                    // A simple opaque page block sits behind the cover. It is
-                    // intentionally independent from ReaderView in this first
-                    // experiment, so the 3D hinge can be evaluated in isolation.
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(ReadingTheme.canvas)
+                    // The page surface expands with the book and uses the
+                    // exact same preset color as ReaderView.
+                    Rectangle()
+                        .fill(readerBackgroundColor)
                         .overlay(alignment: .trailing) {
                             Rectangle()
-                                .fill(Color.black.opacity(0.10))
-                                .frame(width: 5)
+                                .fill(Color.black.opacity(0.08 * (1 - boundsProgress)))
+                                .frame(width: max(1, expandedRect.width * 0.012))
                         }
-                        .frame(width: coverWidth, height: coverHeight)
-                        .offset(x: 9)
-                        .opacity(transition.pageOpacity)
-                        .shadow(color: .black.opacity(0.16), radius: 12, x: 8, y: 8)
+                        .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
+                        .shadow(
+                            color: .black.opacity(0.12 * (1 - boundsProgress)),
+                            radius: 12 * (1 - boundsProgress),
+                            x: 5,
+                            y: 4
+                        )
 
+                    // The cover shares the expanding geometry and rotates
+                    // around its moving leading edge (the book spine).
                     BookCoverArtwork(
                         title: book.name,
                         author: book.author,
                         remoteURL: book.coverUrl,
-                        width: coverWidth,
-                        height: coverHeight
+                        width: max(1, expandedRect.width),
+                        height: max(1, expandedRect.height)
                     )
-                    .frame(width: coverWidth, height: coverHeight)
-                    .scaleEffect(
-                        x: transition.isAnimating ? 1 : sourceFrame.width / coverWidth,
-                        y: transition.isAnimating ? 1 : sourceFrame.height / coverHeight
-                    )
-                    .scaleEffect(transition.exitScale, anchor: .center)
-                    // The leading edge acts as the book spine. Negative Y-axis
-                    // rotation brings the right edge toward the viewer, then
-                    // swings the cover outward to the left of the spine.
+                    .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
                     .rotation3DEffect(
-                        .degrees(transition.openingAngle),
+                        .degrees(coverAngle),
                         axis: (x: 0, y: 1, z: 0),
                         anchor: .leading,
-                        perspective: 0.55
+                        perspective: 0.62
                     )
-                    .shadow(color: .black.opacity(0.24), radius: 24, x: 0, y: 14)
-                    .opacity(transition.opacity)
+                    .shadow(
+                        color: .black.opacity(0.22 * coverFade),
+                        radius: 18 * coverFade,
+                        x: 0,
+                        y: 10 * coverFade
+                    )
+                    .opacity(coverFade)
                 }
-                .frame(width: coverWidth, height: coverHeight, alignment: .leading)
-                .position(center)
+                .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height), alignment: .leading)
+                .position(x: expandedRect.midX, y: expandedRect.midY)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
                 .zIndex(100)
             }
         }
+        .ignoresSafeArea()
         .allowsHitTesting(false)
     }
 }
@@ -530,32 +554,14 @@ private struct BookshelfView: View {
 
         coverTransition.prepare(book: book, sourceFrame: sourceFrame)
 
-        // Let the outer overlay render at the source position before starting
-        // the cover movement and the reader overlay together.
+        // Render the book at its measured shelf position first. Then one
+        // progress value drives the page expansion and cover opening together.
         Task { @MainActor in
             await Task.yield()
-            withAnimation(.spring(response: 0.48, dampingFraction: 0.86)) {
-                coverTransition.isAnimating = true
-                isAnimatingCover = true
-            }
+            isAnimatingCover = true
             isOpeningDestination = true
-
-            // First reveal the blank page behind the cover, then swing the
-            // cover open around its leading edge. Reader content integration
-            // is deliberately deferred until this isolated 3D experiment works.
-            try? await Task.sleep(nanoseconds: 420_000_000)
-            withAnimation(.easeInOut(duration: 0.52)) {
-                coverTransition.pageOpacity = 1
-                coverTransition.openingAngle = -104
-            }
-
-            // Continue the opening motion while the cover exits. The page
-            // remains as the visible surface for this first prototype.
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            withAnimation(.easeInOut(duration: 0.38)) {
-                coverTransition.exitScale = 1.18
-                coverTransition.openingAngle = -122
-                coverTransition.opacity = 0
+            withAnimation(.timingCurve(0.22, 0.76, 0.18, 1.0, duration: 1.05)) {
+                coverTransition.progress = 1
             }
         }
     }
