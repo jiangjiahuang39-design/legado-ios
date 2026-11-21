@@ -10,6 +10,7 @@ final class BookshelfReadViewModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
     private(set) var preparedReaderModel: ReaderViewModel?
+    private var loadTask: Task<Void, Never>?
 
     private let localService: LocalBookService
     private let updateCoordinator: BookUpdateCoordinator
@@ -23,7 +24,23 @@ final class BookshelfReadViewModel: ObservableObject {
     }
 
     func load(book: Book, source: BookSource?, commitUpdate: (@MainActor (BookUpdateReport) async -> Bool)? = nil) async {
-        guard chapters.isEmpty, !isLoading else { return }
+        if let loadTask {
+            await loadTask.value
+            return
+        }
+        guard chapters.isEmpty else { return }
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performLoad(book: book, source: source, commitUpdate: commitUpdate)
+        }
+        loadTask = task
+        await task.value
+        loadTask = nil
+    }
+
+    private func performLoad(book: Book, source: BookSource?, commitUpdate: (@MainActor (BookUpdateReport) async -> Bool)?) async {
+        guard chapters.isEmpty else { return }
         isLoading = true
         defer { isLoading = false }
         if book.origin == "local" {
