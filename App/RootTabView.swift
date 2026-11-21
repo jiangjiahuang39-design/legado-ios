@@ -477,7 +477,7 @@ private struct BookshelfView: View {
                     // with a fully opaque, unmistakable color while it is opening.
                     // This isolates the destination surface from its child views.
                     .overlay {
-                        if isOpeningTransition {
+                        if openingCoverFrame != nil && coverTransition.revealProgress < 0.999 {
                             Rectangle().fill(Color(red: 0.0, green: 0.85, blue: 0.95))
                         }
                     }
