@@ -15,12 +15,6 @@ private final class BookshelfCoverTransition: ObservableObject {
     @Published var sourceFrame: CGRect?
     @Published var progress = 0.0
     @Published var revealProgress = 0.0
-    @Published var readerContainerFrame: CGRect?
-
-    func updateReaderContainerFrame(_ frame: CGRect) {
-        guard readerContainerFrame != frame else { return }
-        readerContainerFrame = frame
-    }
 
     func prepare(book: Book, sourceFrame: CGRect) {
         self.book = book
@@ -48,33 +42,6 @@ private struct BookshelfCoverTransitionOverlay: View {
 
     private func interpolate(_ from: CGFloat, _ to: CGFloat, _ progress: CGFloat) -> CGFloat {
         from + (to - from) * progress
-    }
-
-    // Reconstruct the reader's existing rectangle in the overlay's local
-    // coordinate space so both outlines are drawn on the same canvas.
-    private func readerRectInOverlay(sourceFrame: CGRect, overlayGlobalFrame: CGRect) -> CGRect? {
-        guard let containerFrame = transition.readerContainerFrame else { return nil }
-        let screenSize = UIScreen.main.bounds.size
-        let startRect = sourceFrame.offsetBy(dx: -containerFrame.minX, dy: -containerFrame.minY)
-        let endRect = CGRect(
-            x: -containerFrame.minX,
-            y: -containerFrame.minY,
-            width: screenSize.width,
-            height: screenSize.height
-        )
-        let progress = eased(CGFloat(transition.progress))
-        let minX = interpolate(startRect.minX, endRect.minX, progress)
-        let minY = interpolate(startRect.minY, endRect.minY, progress)
-        let maxX = interpolate(startRect.maxX, endRect.maxX, progress)
-        let maxY = interpolate(startRect.maxY, endRect.maxY, progress)
-        let readerLocalRect = CGRect(
-            x: minX,
-            y: minY,
-            width: max(1, maxX - minX),
-            height: max(1, maxY - minY)
-        )
-        let readerGlobalRect = readerLocalRect.offsetBy(dx: containerFrame.minX, dy: containerFrame.minY)
-        return readerGlobalRect.offsetBy(dx: -overlayGlobalFrame.minX, dy: -overlayGlobalFrame.minY)
     }
 
     var body: some View {
@@ -108,6 +75,21 @@ private struct BookshelfCoverTransitionOverlay: View {
                 // rectangle below. Keep this overlay limited to the physical
                 // cover, so the bookshelf remains visible outside the book.
                 ZStack {
+                    // Diagnostic back face: an opaque inner-cover surface.
+                    // It is shown only after the physical cover passes 90°,
+                    // preventing the bookshelf/reader from showing through it.
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(Color(red: 0.88, green: 0.84, blue: 0.75))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .stroke(Color.black.opacity(0.12), lineWidth: 1)
+                        }
+                        .rotation3DEffect(
+                            .degrees(180),
+                            axis: (x: 0, y: 1, z: 0)
+                        )
+                        .opacity(coverAngle < -90 ? 1 : 0)
+
                     BookCoverArtwork(
                         title: book.name,
                         author: book.author,
@@ -115,46 +97,27 @@ private struct BookshelfCoverTransitionOverlay: View {
                         width: max(1, expandedRect.width),
                         height: max(1, expandedRect.height)
                     )
-                    .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
-                    .rotation3DEffect(
-                        .degrees(coverAngle),
-                        axis: (x: 0, y: 1, z: 0),
-                        anchor: .leading,
-                        perspective: 0.62
-                    )
-                    .shadow(
-                        color: .black.opacity(0.22 * coverFade),
-                        radius: 18 * coverFade,
-                        x: 0,
-                        y: 10 * coverFade
-                    )
-                    .opacity(coverFade)
-                    .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height), alignment: .leading)
-                    .position(x: expandedRect.midX, y: expandedRect.midY)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-                    .zIndex(100)
-
-                    // Temporary geometry diagnostics: blue = cover layer,
-                    // red = reader destination. The thicker red dashed outline
-                    // lets the blue cover outline show through when they coincide.
-                    Rectangle()
-                        .stroke(Color.blue, lineWidth: 2)
-                        .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
-                        .position(x: expandedRect.midX, y: expandedRect.midY)
-                        .allowsHitTesting(false)
-                        .zIndex(101)
-
-                    if let readerRect = readerRectInOverlay(sourceFrame: sourceFrame, overlayGlobalFrame: globalFrame) {
-                        Rectangle()
-                            .stroke(Color.red, style: StrokeStyle(lineWidth: 5, lineCap: .butt, dash: [12, 7]))
-                            .frame(width: max(1, readerRect.width), height: max(1, readerRect.height))
-                            .position(x: readerRect.midX, y: readerRect.midY)
-                            .allowsHitTesting(false)
-                            .zIndex(102)
-                    }
+                    .opacity(coverAngle < -90 ? 0 : 1)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
+                .rotation3DEffect(
+                    .degrees(coverAngle),
+                    axis: (x: 0, y: 1, z: 0),
+                    anchor: .leading,
+                    perspective: 0.62
+                )
+                .shadow(
+                    color: .black.opacity(0.22 * coverFade),
+                    radius: 18 * coverFade,
+                    x: 0,
+                    y: 10 * coverFade
+                )
+                .opacity(coverFade)
+                .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height), alignment: .leading)
+                .position(x: expandedRect.midX, y: expandedRect.midY)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+                .zIndex(100)
             }
         }
         .ignoresSafeArea()
@@ -374,7 +337,6 @@ private struct BookshelfView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let containerGlobalFrame = geometry.frame(in: .global)
             ZStack {
                 ScrollView {
                     VStack(spacing: 0) {
@@ -518,12 +480,6 @@ private struct BookshelfView: View {
                 }
             }
             .coordinateSpace(name: "bookshelf")
-            .onAppear {
-                coverTransition.updateReaderContainerFrame(containerGlobalFrame)
-            }
-            .onChange(of: containerGlobalFrame) { frame in
-                coverTransition.updateReaderContainerFrame(frame)
-            }
             .onPreferenceChange(BookshelfCoverFramePreferenceKey.self) { frames in
                 coverFrames = frames
             }
