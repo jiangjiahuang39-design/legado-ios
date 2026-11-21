@@ -74,31 +74,13 @@ private struct BookshelfCoverTransitionOverlay: View {
                 // The reader is now laid out inside this same expanding page
                 // rectangle below. Keep this overlay limited to the physical
                 // cover, so the bookshelf remains visible outside the book.
-                ZStack {
-                    // Diagnostic back face: an opaque inner-cover surface.
-                    // It is shown only after the physical cover passes 90°,
-                    // preventing the bookshelf/reader from showing through it.
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(Color(red: 0.88, green: 0.84, blue: 0.75))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                .stroke(Color.black.opacity(0.12), lineWidth: 1)
-                        }
-                        .rotation3DEffect(
-                            .degrees(180),
-                            axis: (x: 0, y: 1, z: 0)
-                        )
-                        .opacity(coverAngle < -90 ? 1 : 0)
-
-                    BookCoverArtwork(
-                        title: book.name,
-                        author: book.author,
-                        remoteURL: book.coverUrl,
-                        width: max(1, expandedRect.width),
-                        height: max(1, expandedRect.height)
-                    )
-                    .opacity(coverAngle < -90 ? 0 : 1)
-                }
+                BookCoverArtwork(
+                    title: book.name,
+                    author: book.author,
+                    remoteURL: book.coverUrl,
+                    width: max(1, expandedRect.width),
+                    height: max(1, expandedRect.height)
+                )
                 .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
                 .rotation3DEffect(
                     .degrees(coverAngle),
@@ -256,10 +238,10 @@ struct RootTabView: View {
         // Keep the transition above the entire TabView, including its tab bar.
         // An overlay attached to an individual tab's NavigationStack is still
         // underneath the system-managed tab bar.
-        // Diagnostic only: temporarily hide the physical-cover overlay so we
-        // can inspect whether the destination page surface itself is opaque.
+        // Keep the physical cover above the reader and the system tab bar.
         .overlay {
-            EmptyView()
+            BookshelfCoverTransitionOverlay(transition: bookshelfCoverTransition)
+                .zIndex(1_000)
         }
     }
 
@@ -298,6 +280,7 @@ private struct BookshelfView: View {
     @State private var coverFrames: [String: CGRect] = [:]
     @State private var isAnimatingCover = false
     @State private var isOpeningDestination = false
+    @State private var isPageSurfaceDiagnosticVisible = false
     @AppStorage("bookshelfLayout") private var bookshelfLayout = "grid3"
     @AppStorage("bookshelfSort") private var bookshelfSort = 0
 
@@ -468,7 +451,7 @@ private struct BookshelfView: View {
                         book: book,
                         source: openingSource,
                         preparation: openingPreparation,
-                        isOpeningTransition: openingCoverFrame != nil && coverTransition.revealProgress < 0.999,
+                        isOpeningTransition: openingCoverFrame != nil && isPageSurfaceDiagnosticVisible,
                         openingProgress: coverTransition.revealProgress,
                         openingTopInset: max(0, -readerRect.minY),
                         onClose: closeReader
@@ -483,8 +466,7 @@ private struct BookshelfView: View {
                 // Diagnostic only: draw the same opaque test surface as a sibling
                 // of the destination, at the parent ZStack level. This bypasses
                 // any opacity or compositing applied inside BookshelfBookDestination.
-                // Keep the surface mounted after expansion to inspect its opacity.
-                if isOpeningDestination, openingCoverFrame != nil {
+                if isOpeningDestination, isPageSurfaceDiagnosticVisible {
                     let readerRect = expandedReaderRect(in: geometry)
                     Rectangle()
                         .fill(Color(red: 0.0, green: 0.85, blue: 0.95))
@@ -509,6 +491,7 @@ private struct BookshelfView: View {
                 openingCoverID = nil
                 openingCoverFrame = nil
                 isAnimatingCover = false
+                isPageSurfaceDiagnosticVisible = false
                 coverTransition.reset()
             }
         }
@@ -571,6 +554,7 @@ private struct BookshelfView: View {
         openingPreparation = preparation
 
         let hasCoverTransition = openingCoverFrame != nil
+        isPageSurfaceDiagnosticVisible = hasCoverTransition
         if let sourceFrame = openingCoverFrame {
             coverTransition.prepare(book: book, sourceFrame: sourceFrame)
         }
@@ -610,6 +594,14 @@ private struct BookshelfView: View {
             withAnimation(.linear(duration: 1.15)) {
                 coverTransition.revealProgress = 1
             }
+
+            // Keep the opaque diagnostic rectangle mounted throughout the
+            // animation. Remove it only after the animation has finished,
+            // outside the animation transaction, so conditional removal
+            // cannot introduce an unintended opacity transition.
+            try? await Task.sleep(nanoseconds: 1_150_000_000)
+            guard isOpeningDestination, openingBook?.bookUrl == book.bookUrl else { return }
+            isPageSurfaceDiagnosticVisible = false
         }
     }
 
