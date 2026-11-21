@@ -155,6 +155,7 @@ final class EPUBReaderModel: ObservableObject, EPUBNavigatorDelegate {
 struct EPUBReaderView: View {
     private let onClose: (() -> Void)?
     private let isOpeningTransition: Bool
+    private let openingTopInset: CGFloat
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
@@ -175,9 +176,10 @@ struct EPUBReaderView: View {
     @AppStorage("epubTheme") private var theme = "system"
 
     init(book: Book, chapters: [BookChapter], initialIndex: Int, onClose: (() -> Void)? = nil,
-         isOpeningTransition: Bool = false) {
+         isOpeningTransition: Bool = false, openingTopInset: CGFloat = 0) {
         self.onClose = onClose
         self.isOpeningTransition = isOpeningTransition
+        self.openingTopInset = openingTopInset
         _model = StateObject(wrappedValue: EPUBReaderModel(book: book, chapters: chapters, initialIndex: initialIndex))
     }
 
@@ -216,6 +218,7 @@ struct EPUBReaderView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             if model.showsControls, model.navigator != nil { bottomBar }
         }
+        .padding(.top, openingTopInset)
         .background(Color(uiColor: .systemBackground))
         .navigationBarHidden(true)
         .readingTabBarHidden(!isOpeningTransition)
