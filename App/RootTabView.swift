@@ -15,6 +15,12 @@ private final class BookshelfCoverTransition: ObservableObject {
     @Published var sourceFrame: CGRect?
     @Published var progress = 0.0
     @Published var revealProgress = 0.0
+    @Published var readerContainerFrame: CGRect?
+
+    func updateReaderContainerFrame(_ frame: CGRect) {
+        guard readerContainerFrame != frame else { return }
+        readerContainerFrame = frame
+    }
 
     func prepare(book: Book, sourceFrame: CGRect) {
         self.book = book
@@ -42,6 +48,33 @@ private struct BookshelfCoverTransitionOverlay: View {
 
     private func interpolate(_ from: CGFloat, _ to: CGFloat, _ progress: CGFloat) -> CGFloat {
         from + (to - from) * progress
+    }
+
+    // Reconstruct the reader's existing rectangle in the overlay's local
+    // coordinate space so both outlines are drawn on the same canvas.
+    private func readerRectInOverlay(sourceFrame: CGRect, overlayGlobalFrame: CGRect) -> CGRect? {
+        guard let containerFrame = transition.readerContainerFrame else { return nil }
+        let screenSize = UIScreen.main.bounds.size
+        let startRect = sourceFrame.offsetBy(dx: -containerFrame.minX, dy: -containerFrame.minY)
+        let endRect = CGRect(
+            x: -containerFrame.minX,
+            y: -containerFrame.minY,
+            width: screenSize.width,
+            height: screenSize.height
+        )
+        let progress = eased(CGFloat(transition.progress))
+        let minX = interpolate(startRect.minX, endRect.minX, progress)
+        let minY = interpolate(startRect.minY, endRect.minY, progress)
+        let maxX = interpolate(startRect.maxX, endRect.maxX, progress)
+        let maxY = interpolate(startRect.maxY, endRect.maxY, progress)
+        let readerLocalRect = CGRect(
+            x: minX,
+            y: minY,
+            width: max(1, maxX - minX),
+            height: max(1, maxY - minY)
+        )
+        let readerGlobalRect = readerLocalRect.offsetBy(dx: containerFrame.minX, dy: containerFrame.minY)
+        return readerGlobalRect.offsetBy(dx: -overlayGlobalFrame.minX, dy: -overlayGlobalFrame.minY)
     }
 
     var body: some View {
@@ -74,32 +107,53 @@ private struct BookshelfCoverTransitionOverlay: View {
                 // The reader is now laid out inside this same expanding page
                 // rectangle below. Keep this overlay limited to the physical
                 // cover, so the bookshelf remains visible outside the book.
-                BookCoverArtwork(
-                    title: book.name,
-                    author: book.author,
-                    remoteURL: book.coverUrl,
-                    width: max(1, expandedRect.width),
-                    height: max(1, expandedRect.height)
-                )
-                .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
-                .rotation3DEffect(
-                    .degrees(coverAngle),
-                    axis: (x: 0, y: 1, z: 0),
-                    anchor: .leading,
-                    perspective: 0.62
-                )
-                .shadow(
-                    color: .black.opacity(0.22 * coverFade),
-                    radius: 18 * coverFade,
-                    x: 0,
-                    y: 10 * coverFade
-                )
-                .opacity(coverFade)
-                .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height), alignment: .leading)
-                .position(x: expandedRect.midX, y: expandedRect.midY)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-                .zIndex(100)
+                ZStack {
+                    BookCoverArtwork(
+                        title: book.name,
+                        author: book.author,
+                        remoteURL: book.coverUrl,
+                        width: max(1, expandedRect.width),
+                        height: max(1, expandedRect.height)
+                    )
+                    .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
+                    .rotation3DEffect(
+                        .degrees(coverAngle),
+                        axis: (x: 0, y: 1, z: 0),
+                        anchor: .leading,
+                        perspective: 0.62
+                    )
+                    .shadow(
+                        color: .black.opacity(0.22 * coverFade),
+                        radius: 18 * coverFade,
+                        x: 0,
+                        y: 10 * coverFade
+                    )
+                    .opacity(coverFade)
+                    .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height), alignment: .leading)
+                    .position(x: expandedRect.midX, y: expandedRect.midY)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                    .zIndex(100)
+
+                    // Temporary geometry diagnostics: blue = cover layer,
+                    // red = reader destination. These strokes have no fill.
+                    Rectangle()
+                        .stroke(Color.blue, lineWidth: 2)
+                        .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
+                        .position(x: expandedRect.midX, y: expandedRect.midY)
+                        .allowsHitTesting(false)
+                        .zIndex(101)
+
+                    if let readerRect = readerRectInOverlay(sourceFrame: sourceFrame, overlayGlobalFrame: globalFrame) {
+                        Rectangle()
+                            .stroke(Color.red, lineWidth: 2)
+                            .frame(width: max(1, readerRect.width), height: max(1, readerRect.height))
+                            .position(x: readerRect.midX, y: readerRect.midY)
+                            .allowsHitTesting(false)
+                            .zIndex(102)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .ignoresSafeArea()
@@ -319,6 +373,7 @@ private struct BookshelfView: View {
 
     var body: some View {
         GeometryReader { geometry in
+            let containerGlobalFrame = geometry.frame(in: .global)
             ZStack {
                 ScrollView {
                     VStack(spacing: 0) {
@@ -462,6 +517,12 @@ private struct BookshelfView: View {
                 }
             }
             .coordinateSpace(name: "bookshelf")
+            .onAppear {
+                coverTransition.updateReaderContainerFrame(containerGlobalFrame)
+            }
+            .onChange(of: containerGlobalFrame) { frame in
+                coverTransition.updateReaderContainerFrame(frame)
+            }
             .onPreferenceChange(BookshelfCoverFramePreferenceKey.self) { frames in
                 coverFrames = frames
             }
@@ -851,16 +912,6 @@ private struct BookshelfBookDestination: View {
     let openingProgress: Double
     let openingTopInset: CGFloat
     let onClose: () -> Void
-    @AppStorage("readerTheme") private var readerTheme = "wechat"
-    @AppStorage("themeMode") private var themeMode = "0"
-
-    private var openingPageBackground: Color {
-        if book.origin == "local", URL(string: book.bookUrl)?.pathExtension.lowercased() == "epub" {
-            return Color(uiColor: .systemBackground)
-        }
-        let preset = themeMode == "3" ? ReaderStylePreset.eInk : ReaderStylePreset.resolve(readerTheme)
-        return Color(uiColor: preset.background)
-    }
 
     var body: some View {
         Group {
@@ -882,9 +933,6 @@ private struct BookshelfBookDestination: View {
                                   openingTopInset: openingTopInset, onClose: onClose)
             }
         }
-        // Keep the expanding destination viewport opaque independently of
-        // the reader's internal content/reveal layers.
-        .background(openingPageBackground)
         .readingTabBarHidden(!isOpeningTransition)
     }
 }
@@ -1239,36 +1287,28 @@ struct BookshelfReadView: View {
     }
 
     var body: some View {
-        // Keep the expanding reader surface physically opaque from its first
-        // frame. A background modifier on the conditional Group can leave
-        // the transition visually blended with the bookshelf while its child
-        // reader is mounting; an explicit bottom layer makes the page surface
-        // independent of the reader content's reveal opacity.
-        ZStack {
-            openingPlaceholderBackground
-
-            Group {
-                if !model.chapters.isEmpty, model.resolvedBook != nil,
-                   let readerModel = model.makeReaderModel(source: source) {
-                    ReaderView(model: readerModel, onClose: onClose,
-                               isOpeningTransition: isOpeningTransition, openingProgress: openingProgress,
-                               openingTopInset: openingTopInset)
-                } else if model.isLoading {
-                    openingStateView {
-                        ProgressView("正在打开…")
-                    }
-                } else if let errorMessage = model.errorMessage {
-                    openingStateView {
-                        ReadingUnavailableView("无法打开书籍", systemImage: "book.closed", description: Text(errorMessage))
-                    }
-                } else {
-                    openingStateView {
-                        ProgressView("正在打开…")
-                    }
+        Group {
+            if !model.chapters.isEmpty, model.resolvedBook != nil,
+               let readerModel = model.makeReaderModel(source: source) {
+                ReaderView(model: readerModel, onClose: onClose,
+                           isOpeningTransition: isOpeningTransition, openingProgress: openingProgress,
+                           openingTopInset: openingTopInset)
+            } else if model.isLoading {
+                openingStateView {
+                    ProgressView("正在打开…")
+                }
+            } else if let errorMessage = model.errorMessage {
+                openingStateView {
+                    ReadingUnavailableView("无法打开书籍", systemImage: "book.closed", description: Text(errorMessage))
+                }
+            } else {
+                openingStateView {
+                    ProgressView("正在打开…")
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(openingPlaceholderBackground)
     }
 
     private var openingPlaceholderBackground: Color {
