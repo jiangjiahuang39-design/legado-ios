@@ -373,11 +373,15 @@ extension View {
     }
 
     @ViewBuilder
-    func readingTabBarHidden() -> some View {
-        if #available(iOS 16.0, *), !ReadingCompatibility.usesLegacyUI {
-            toolbar(.hidden, for: .tabBar)
+    func readingTabBarHidden(_ hidden: Bool = true) -> some View {
+        if hidden {
+            if #available(iOS 16.0, *), !ReadingCompatibility.usesLegacyUI {
+                toolbar(.hidden, for: .tabBar)
+            } else {
+                background(ReadingHiddenTabBar())
+            }
         } else {
-            background(ReadingHiddenTabBar())
+            self
         }
     }
 
