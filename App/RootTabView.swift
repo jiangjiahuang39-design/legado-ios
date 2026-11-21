@@ -136,7 +136,8 @@ private struct BookshelfCoverTransitionOverlay: View {
                     .zIndex(100)
 
                     // Temporary geometry diagnostics: blue = cover layer,
-                    // red = reader destination. These strokes have no fill.
+                    // red = reader destination. The thicker red dashed outline
+                    // lets the blue cover outline show through when they coincide.
                     Rectangle()
                         .stroke(Color.blue, lineWidth: 2)
                         .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
@@ -146,7 +147,7 @@ private struct BookshelfCoverTransitionOverlay: View {
 
                     if let readerRect = readerRectInOverlay(sourceFrame: sourceFrame, overlayGlobalFrame: globalFrame) {
                         Rectangle()
-                            .stroke(Color.red, lineWidth: 2)
+                            .stroke(Color.red, style: StrokeStyle(lineWidth: 5, lineCap: .butt, dash: [12, 7]))
                             .frame(width: max(1, readerRect.width), height: max(1, readerRect.height))
                             .position(x: readerRect.midX, y: readerRect.midY)
                             .allowsHitTesting(false)
