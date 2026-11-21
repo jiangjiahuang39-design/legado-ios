@@ -637,7 +637,10 @@ private struct BookshelfView: View {
                 openingPreparation = nil
                 openingCoverID = nil
                 openingCoverFrame = nil
-                coverSnapshotViews.removeAll()
+                // Keep weak snapshot-view registrations across reader dismissal.
+                // The bookshelf and its probe views can remain mounted in the window
+                // while the reader is presented, so didMoveToWindow() may not fire
+                // again to re-register them on the next opening.
                 isAnimatingCover = false
                 isPageSurfaceDiagnosticVisible = false
                 coverTransition.reset()
