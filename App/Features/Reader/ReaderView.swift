@@ -491,11 +491,11 @@ struct ReaderView: View {
                 }
             }
             .clipped()
-            .background {
-                if !isOpeningTransition {
-                    backgroundColor.ignoresSafeArea()
-                }
-            }
+            // The bookshelf destination owns the full-screen geometry and
+            // clips this canvas to the animated reader rectangle. Expanding
+            // this background through safe areas here lets network-reader
+            // content escape that rectangle during the handoff.
+            .background(backgroundColor)
         }
     }
 
