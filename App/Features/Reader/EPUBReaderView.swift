@@ -154,6 +154,7 @@ final class EPUBReaderModel: ObservableObject, EPUBNavigatorDelegate {
 
 struct EPUBReaderView: View {
     private let onClose: (() -> Void)?
+    private let isOpeningTransition: Bool
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
@@ -167,14 +168,23 @@ struct EPUBReaderView: View {
     @State private var sliderProgress = 0.0
     @State private var isScrubbing = false
     @State private var saveTask: Task<Void, Never>?
+    @State private var didActivateReadingSession = false
     @AppStorage("epubFontScale") private var fontScale = 1.0
     @AppStorage("epubScroll") private var scroll = false
     @AppStorage("epubPublisherStyles") private var publisherStyles = true
     @AppStorage("epubTheme") private var theme = "system"
 
-    init(book: Book, chapters: [BookChapter], initialIndex: Int, onClose: (() -> Void)? = nil) {
+    init(book: Book, chapters: [BookChapter], initialIndex: Int, onClose: (() -> Void)? = nil,
+         isOpeningTransition: Bool = false) {
         self.onClose = onClose
+        self.isOpeningTransition = isOpeningTransition
         _model = StateObject(wrappedValue: EPUBReaderModel(book: book, chapters: chapters, initialIndex: initialIndex))
+    }
+
+    private func activateReadingSession() {
+        guard !didActivateReadingSession else { return }
+        didActivateReadingSession = true
+        activity.beginReading(model.book)
     }
 
     private func closeReader() {
@@ -208,7 +218,7 @@ struct EPUBReaderView: View {
         }
         .background(Color(uiColor: .systemBackground))
         .navigationBarHidden(true)
-        .readingTabBarHidden()
+        .readingTabBarHidden(!isOpeningTransition)
         .task {
             model.onLocationChanged = { locator, chapter in
                 guard !showsTextReader else { return }
@@ -219,11 +229,15 @@ struct EPUBReaderView: View {
                     await library.updateProgress(for: model.book, chapter: chapter, epubLocation: locator.jsonString)
                 }
             }
-            activity.beginReading(model.book)
+            if !isOpeningTransition { activateReadingSession() }
             await model.open(preferences: preferences)
+        }
+        .onChange(of: isOpeningTransition) { isTransitioning in
+            if !isTransitioning { activateReadingSession() }
         }
         .onChange(of: preferences) { model.apply($0) }
         .onChange(of: scenePhase) { phase in
+            guard didActivateReadingSession else { return }
             if phase != .active { saveProgress(); Task { await activity.endReading(model.book) } }
             else { activity.beginReading(model.book) }
         }
@@ -231,7 +245,9 @@ struct EPUBReaderView: View {
             saveProgress()
             if !showsTextReader {
                 model.onLocationChanged = nil
-                Task { await activity.endReading(model.book) }
+                if didActivateReadingSession {
+                    Task { await activity.endReading(model.book) }
+                }
             }
         }
         .sheet(isPresented: $showsTOC) { tocSheet }
