@@ -9,7 +9,7 @@ permissions:
 jobs:
   build:
     name: Build Legado Unsigned IPA
-    runs-on: macos-26-intel
+    runs-on: macos-26
 
     steps:
       - name: Checkout source
