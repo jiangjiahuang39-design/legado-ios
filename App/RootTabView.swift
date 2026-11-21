@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 private struct BookshelfCoverFramePreferenceKey: PreferenceKey {
@@ -15,12 +16,44 @@ private final class BookshelfCoverTransition: ObservableObject {
     @Published var sourceFrame: CGRect?
     @Published var progress = 0.0
     @Published var revealProgress = 0.0
+    @Published var coverSnapshot: UIImage?
 
     func prepare(book: Book, sourceFrame: CGRect) {
         self.book = book
         self.sourceFrame = sourceFrame
         progress = 0
         revealProgress = 0
+        coverSnapshot = Self.makeCoverSnapshot(book: book, size: sourceFrame.size)
+    }
+
+    private static func makeCoverSnapshot(book: Book, size: CGSize) -> UIImage? {
+        guard size.width > 1, size.height > 1 else { return nil }
+
+        // Render the complete SwiftUI cover at its original shelf dimensions.
+        // This captures the placeholder's Canvas artwork and Text together,
+        // rather than trying to recover the title from the remote cover image.
+        let cover = BookCoverArtwork(
+            title: book.name,
+            author: book.author,
+            remoteURL: book.coverUrl,
+            width: size.width,
+            height: size.height
+        )
+        .frame(width: size.width, height: size.height)
+
+        let hostingController = UIHostingController(rootView: cover)
+        hostingController.view.bounds = CGRect(origin: .zero, size: size)
+        hostingController.view.backgroundColor = .clear
+        hostingController.view.setNeedsLayout()
+        hostingController.view.layoutIfNeeded()
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = UIScreen.main.scale
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        return renderer.image { context in
+            hostingController.view.layer.render(in: context.cgContext)
+        }
     }
 
     func reset() {
@@ -28,6 +61,7 @@ private final class BookshelfCoverTransition: ObservableObject {
         sourceFrame = nil
         progress = 0
         revealProgress = 0
+        coverSnapshot = nil
     }
 }
 
@@ -74,14 +108,23 @@ private struct BookshelfCoverTransitionOverlay: View {
                 // The reader is now laid out inside this same expanding page
                 // rectangle below. Keep this overlay limited to the physical
                 // cover, so the bookshelf remains visible outside the book.
-                BookCoverArtwork(
-                    title: book.name,
-                    author: book.author,
-                    remoteURL: book.coverUrl,
-                    width: max(1, expandedRect.width),
-                    height: max(1, expandedRect.height)
-                )
+                Group {
+                    if let snapshot = transition.coverSnapshot {
+                        Image(uiImage: snapshot)
+                            .resizable()
+                    } else {
+                        // Defensive fallback if UIKit cannot produce a snapshot.
+                        BookCoverArtwork(
+                            title: book.name,
+                            author: book.author,
+                            remoteURL: book.coverUrl,
+                            width: max(1, expandedRect.width),
+                            height: max(1, expandedRect.height)
+                        )
+                    }
+                }
                 .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
+                .clipped()
                 .rotation3DEffect(
                     .degrees(coverAngle),
                     axis: (x: 0, y: 1, z: 0),
