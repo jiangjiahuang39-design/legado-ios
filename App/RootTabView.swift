@@ -11,48 +11,135 @@ private struct BookshelfCoverFramePreferenceKey: PreferenceKey {
 }
 
 @MainActor
+private final class BookshelfCoverSnapshotProbeView: UIView {
+    var onReady: ((UIView) -> Void)?
+    var identity: String?
+    private var didReportReady = false
+
+    func update(identity: String, onReady: @escaping (UIView) -> Void) {
+        if self.identity != identity {
+            self.identity = identity
+            didReportReady = false
+        }
+        self.onReady = onReady
+        notifyIfReady()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { didReportReady = false }
+        notifyIfReady()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        notifyIfReady()
+    }
+
+    private func notifyIfReady() {
+        guard !didReportReady, window != nil, bounds.width > 1, bounds.height > 1 else { return }
+        didReportReady = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window != nil else { return }
+            self.onReady?(self)
+        }
+    }
+}
+
+@MainActor
+private struct BookshelfCoverSnapshotProbe: UIViewRepresentable {
+    let identity: String
+    let onReady: (UIView) -> Void
+
+    func makeUIView(context: Context) -> BookshelfCoverSnapshotProbeView {
+        let view = BookshelfCoverSnapshotProbeView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        view.update(identity: identity, onReady: onReady)
+        return view
+    }
+
+    func updateUIView(_ uiView: BookshelfCoverSnapshotProbeView, context: Context) {
+        uiView.update(identity: identity, onReady: onReady)
+    }
+}
+
+@MainActor
+private final class BookshelfCoverSnapshotSource {
+    weak var view: UIView?
+
+    init(_ view: UIView) {
+        self.view = view
+    }
+}
+
+@MainActor
 private final class BookshelfCoverTransition: ObservableObject {
     @Published var book: Book?
     @Published var sourceFrame: CGRect?
     @Published var progress = 0.0
     @Published var revealProgress = 0.0
     @Published var coverSnapshot: UIImage?
+    @Published var blackCover: UIImage?
+    @Published var isVisible = false
 
     func prepare(book: Book, sourceFrame: CGRect) {
         self.book = book
         self.sourceFrame = sourceFrame
         progress = 0
         revealProgress = 0
-        coverSnapshot = Self.makeCoverSnapshot(book: book, size: sourceFrame.size)
+        coverSnapshot = nil
+        isVisible = false
+        blackCover = Self.makeBlackCover(size: sourceFrame.size)
     }
 
-    private static func makeCoverSnapshot(book: Book, size: CGSize) -> UIImage? {
+    func activate() {
+        isVisible = true
+    }
+
+    func captureSnapshot(from sourceView: UIView) -> Bool {
+        guard let window = sourceView.window,
+              sourceView.bounds.width > 1,
+              sourceView.bounds.height > 1 else { return false }
+
+        // Capture the real, already-mounted window, then crop to the probe view
+        // placed exactly over the visible shelf cover. This preserves SwiftUI
+        // Text, Canvas, cached/async images, and the current Environment.
+        let windowRenderer = UIGraphicsImageRenderer(bounds: window.bounds)
+        let windowImage = windowRenderer.image { _ in
+            _ = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+
+        guard let cgImage = windowImage.cgImage else { return false }
+        let rectInWindow = sourceView.convert(sourceView.bounds, to: window)
+        let scale = windowImage.scale
+        let cropRect = CGRect(
+            x: rectInWindow.minX * scale,
+            y: rectInWindow.minY * scale,
+            width: rectInWindow.width * scale,
+            height: rectInWindow.height * scale
+        ).integral
+
+        guard cropRect.width > 1, cropRect.height > 1,
+              cropRect.minX >= 0, cropRect.minY >= 0,
+              cropRect.maxX <= CGFloat(cgImage.width),
+              cropRect.maxY <= CGFloat(cgImage.height),
+              let cropped = cgImage.cropping(to: cropRect) else { return false }
+
+        let snapshot = UIImage(cgImage: cropped, scale: windowImage.scale, orientation: .up)
+        guard snapshot.size.width > 1, snapshot.size.height > 1 else { return false }
+        coverSnapshot = snapshot
+        return true
+    }
+
+    private static func makeBlackCover(size: CGSize) -> UIImage? {
         guard size.width > 1, size.height > 1 else { return nil }
-
-        // Render the complete SwiftUI cover at its original shelf dimensions.
-        // This captures the placeholder's Canvas artwork and Text together,
-        // rather than trying to recover the title from the remote cover image.
-        let cover = BookCoverArtwork(
-            title: book.name,
-            author: book.author,
-            remoteURL: book.coverUrl,
-            width: size.width,
-            height: size.height
-        )
-        .frame(width: size.width, height: size.height)
-
-        let hostingController = UIHostingController(rootView: cover)
-        hostingController.view.bounds = CGRect(origin: .zero, size: size)
-        hostingController.view.backgroundColor = .clear
-        hostingController.view.setNeedsLayout()
-        hostingController.view.layoutIfNeeded()
-
         let format = UIGraphicsImageRendererFormat()
         format.scale = UIScreen.main.scale
-        format.opaque = false
-        let renderer = UIGraphicsImageRenderer(size: size, format: format)
-        return renderer.image { context in
-            hostingController.view.layer.render(in: context.cgContext)
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
         }
     }
 
@@ -62,6 +149,8 @@ private final class BookshelfCoverTransition: ObservableObject {
         progress = 0
         revealProgress = 0
         coverSnapshot = nil
+        blackCover = nil
+        isVisible = false
     }
 }
 
@@ -80,7 +169,7 @@ private struct BookshelfCoverTransitionOverlay: View {
 
     var body: some View {
         GeometryReader { geometry in
-            if let book = transition.book, let sourceFrame = transition.sourceFrame {
+            if transition.isVisible, let book = transition.book, let sourceFrame = transition.sourceFrame {
                 let globalFrame = geometry.frame(in: .global)
                 let startRect = sourceFrame.offsetBy(dx: -globalFrame.minX, dy: -globalFrame.minY)
                 let endRect = CGRect(origin: .zero, size: geometry.size)
@@ -108,19 +197,18 @@ private struct BookshelfCoverTransitionOverlay: View {
                 // The reader is now laid out inside this same expanding page
                 // rectangle below. Keep this overlay limited to the physical
                 // cover, so the bookshelf remains visible outside the book.
-                Group {
+                ZStack {
+                    // Diagnostic safety layer: if the real-view snapshot is
+                    // missing, the moving cover is unmistakably black.
+                    if let blackCover = transition.blackCover {
+                        Image(uiImage: blackCover)
+                            .resizable()
+                    } else {
+                        Color.black
+                    }
                     if let snapshot = transition.coverSnapshot {
                         Image(uiImage: snapshot)
                             .resizable()
-                    } else {
-                        // Defensive fallback if UIKit cannot produce a snapshot.
-                        BookCoverArtwork(
-                            title: book.name,
-                            author: book.author,
-                            remoteURL: book.coverUrl,
-                            width: max(1, expandedRect.width),
-                            height: max(1, expandedRect.height)
-                        )
                     }
                 }
                 .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
@@ -321,6 +409,7 @@ private struct BookshelfView: View {
     @State private var openingCoverID: String?
     @State private var openingCoverFrame: CGRect?
     @State private var coverFrames: [String: CGRect] = [:]
+    @State private var coverSnapshotViews: [String: BookshelfCoverSnapshotSource] = [:]
     @State private var isAnimatingCover = false
     @State private var isOpeningDestination = false
     @State private var isPageSurfaceDiagnosticVisible = false
@@ -438,7 +527,8 @@ private struct BookshelfView: View {
                                             } label: {
                                                 ContinueReadingCard(
                                                     book: book,
-                                                    isAnimatingCover: isAnimatingCover && openingCoverID == "\(book.bookUrl)::continue"
+                                                    isAnimatingCover: isAnimatingCover && openingCoverID == "\(book.bookUrl)::continue",
+                                                    onCoverViewReady: { view in coverSnapshotViews["\(book.bookUrl)::continue"] = BookshelfCoverSnapshotSource(view) }
                                                 )
                                             }
                                             .buttonStyle(.plain)
@@ -455,7 +545,8 @@ private struct BookshelfView: View {
                                                     book: book,
                                                     compact: false,
                                                     grid: true,
-                                                    isAnimatingCover: isAnimatingCover && openingCoverID == book.bookUrl
+                                                    isAnimatingCover: isAnimatingCover && openingCoverID == book.bookUrl,
+                                                    onCoverViewReady: { view in coverSnapshotViews[book.bookUrl] = BookshelfCoverSnapshotSource(view) }
                                                 ) { beginOpening(book, source: sources.sources.first { $0.bookSourceUrl == book.origin }, animationID: book.bookUrl) }
                                             }
                                         }
@@ -465,7 +556,8 @@ private struct BookshelfView: View {
                                                 book: book,
                                                 compact: bookshelfLayout == "compact",
                                                 grid: false,
-                                                isAnimatingCover: isAnimatingCover && openingCoverID == book.bookUrl
+                                                isAnimatingCover: isAnimatingCover && openingCoverID == book.bookUrl,
+                                                onCoverViewReady: { view in coverSnapshotViews[book.bookUrl] = BookshelfCoverSnapshotSource(view) }
                                             ) { beginOpening(book, source: sources.sources.first { $0.bookSourceUrl == book.origin }, animationID: book.bookUrl) }
                                             if book.id != displayedBooks.last?.id {
                                                 Rectangle().fill(ReadingTheme.separator).frame(height: 0.5)
@@ -533,6 +625,7 @@ private struct BookshelfView: View {
                 openingPreparation = nil
                 openingCoverID = nil
                 openingCoverFrame = nil
+                coverSnapshotViews.removeAll()
                 isAnimatingCover = false
                 isPageSurfaceDiagnosticVisible = false
                 coverTransition.reset()
@@ -597,15 +690,14 @@ private struct BookshelfView: View {
         openingPreparation = preparation
 
         let hasCoverTransition = openingCoverFrame != nil
-        isPageSurfaceDiagnosticVisible = hasCoverTransition
+        isPageSurfaceDiagnosticVisible = false
         if let sourceFrame = openingCoverFrame {
             coverTransition.prepare(book: book, sourceFrame: sourceFrame)
         }
 
-        // Present the destination immediately. Catalog parsing and chapter
-        // loading run independently and are never allowed to delay the cover.
-        isOpeningDestination = true
-
+        // Catalog parsing and chapter loading run independently and are never
+        // allowed to delay the cover. The destination itself is presented only
+        // after the source-window snapshot has been captured.
         Task { @MainActor in
             await preparation.load(book: book, source: source) { report in
                 await library.commitPreparedUpdate(requestedBook: book, report: report)
@@ -621,27 +713,41 @@ private struct BookshelfView: View {
             }
         }
 
-        guard hasCoverTransition else { return }
+        guard hasCoverTransition else {
+            isOpeningDestination = true
+            return
+        }
         Task { @MainActor in
-            // Give SwiftUI one frame to mount the reader-sized background.
-            // The actual reader content remains hidden until the 70% point.
+            // Wait until the source cover is still mounted in the real window.
+            // Capture before setting isAnimatingCover, which hides the shelf copy.
+            await Task.yield()
+            await Task.yield()
+            guard openingBook?.bookUrl == book.bookUrl else { return }
+
+            if let sourceView = coverSnapshotViews[animationID]?.view {
+                _ = coverTransition.captureSnapshot(from: sourceView)
+            }
+
+            // Mount the reader after capturing the still-visible shelf cover.
+            isOpeningDestination = true
             await Task.yield()
             guard isOpeningDestination, openingBook?.bookUrl == book.bookUrl else { return }
+
+            // Reveal the moving cover only after the window capture attempt has
+            // finished, so the black safety layer cannot contaminate its own snapshot.
+            coverTransition.activate()
+            isPageSurfaceDiagnosticVisible = true
+
+            // Even when capture fails, proceed with the solid-black diagnostic
+            // cover rather than silently substituting a newly-rendered SwiftUI view.
             isAnimatingCover = true
             withAnimation(.timingCurve(0.30, 0.30, 0.18, 1.0, duration: 1.15)) {
                 coverTransition.progress = 1
             }
-            // This independent linear clock represents elapsed animation time,
-            // so the 70% content-reveal threshold is exactly 70% of 1.15 seconds
-            // rather than 70% of the eased geometry progress.
             withAnimation(.linear(duration: 1.15)) {
                 coverTransition.revealProgress = 1
             }
 
-            // Keep the opaque diagnostic rectangle mounted throughout the
-            // animation. Remove it only after the animation has finished,
-            // outside the animation transaction, so conditional removal
-            // cannot introduce an unintended opacity transition.
             try? await Task.sleep(nanoseconds: 1_150_000_000)
             guard isOpeningDestination, openingBook?.bookUrl == book.bookUrl else { return }
             isPageSurfaceDiagnosticVisible = false
@@ -818,6 +924,7 @@ private struct BookshelfBookLink: View {
     let compact: Bool
     let grid: Bool
     let isAnimatingCover: Bool
+    let onCoverViewReady: (UIView) -> Void
     let onOpen: () -> Void
     @State private var showsGroupSelector = false
 
@@ -828,13 +935,15 @@ private struct BookshelfBookLink: View {
             if grid {
                 BookshelfGridItem(
                     book: book,
-                    isAnimatingCover: isAnimatingCover
+                    isAnimatingCover: isAnimatingCover,
+                    onCoverViewReady: onCoverViewReady
                 )
             } else {
                 BookshelfRow(
                     book: book,
                     compact: compact,
-                    isAnimatingCover: isAnimatingCover
+                    isAnimatingCover: isAnimatingCover,
+                    onCoverViewReady: onCoverViewReady
                 )
             }
         }
@@ -861,6 +970,7 @@ private struct BookshelfBookLink: View {
 private struct BookshelfGridItem: View {
     let book: Book
     let isAnimatingCover: Bool
+    let onCoverViewReady: (UIView) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -872,6 +982,9 @@ private struct BookshelfGridItem: View {
                     width: geometry.size.width,
                     height: geometry.size.height
                 )
+                .overlay {
+                    BookshelfCoverSnapshotProbe(identity: book.bookUrl, onReady: onCoverViewReady)
+                }
                 .background {
                     GeometryReader { proxy in
                         Color.clear.preference(
@@ -948,6 +1061,7 @@ private struct ContinueReadingCard: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let book: Book
     let isAnimatingCover: Bool
+    let onCoverViewReady: (UIView) -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 18) {
@@ -986,6 +1100,9 @@ private struct ContinueReadingCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             if !dynamicTypeSize.isAccessibilitySize {
                 BookCoverArtwork(title: book.name, author: book.author, remoteURL: book.coverUrl, width: 94, height: 140)
+                    .overlay {
+                        BookshelfCoverSnapshotProbe(identity: "\(book.bookUrl)::continue", onReady: onCoverViewReady)
+                    }
                     .background {
                         GeometryReader { proxy in
                             Color.clear.preference(
@@ -1361,6 +1478,7 @@ private struct BookshelfRow: View {
     let book: Book
     var compact = false
     let isAnimatingCover: Bool
+    let onCoverViewReady: (UIView) -> Void
     @ScaledMetric(relativeTo: .body) private var coverWidth = 52
 
     private var readingPosition: String {
@@ -1382,6 +1500,9 @@ private struct BookshelfRow: View {
                 width: compact ? 40 : coverWidth,
                 height: compact ? 56 : coverWidth * 1.42
             )
+            .overlay {
+                BookshelfCoverSnapshotProbe(identity: book.bookUrl, onReady: onCoverViewReady)
+            }
             .background {
                 GeometryReader { proxy in
                     Color.clear.preference(
