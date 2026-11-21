@@ -71,17 +71,44 @@ private struct BookshelfCoverTransitionOverlay: View {
                 let coverAngle = -118 * coverRotationProgress
                 let coverFade = 1 - min(1, max(0, (rawProgress - 0.88) / 0.12))
 
-                // The reader is now laid out inside this same expanding page
-                // rectangle below. Keep this overlay limited to the physical
-                // cover, so the bookshelf remains visible outside the book.
-                BookCoverArtwork(
-                    title: book.name,
-                    author: book.author,
-                    remoteURL: book.coverUrl,
-                    width: max(1, expandedRect.width),
-                    height: max(1, expandedRect.height)
-                )
-                .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
+                // The reader is laid out inside the same expanding rectangle.
+                // This overlay represents the physical cover only: its two
+                // faces are separate opaque surfaces, with the bookshelf
+                // remaining visible only outside the book's bounds.
+                let coverSize = CGSize(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
+                let isShowingBack = coverAngle <= -90
+
+                Group {
+                    if isShowingBack {
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(Color(uiColor: .secondarySystemBackground))
+                            Rectangle()
+                                .fill(Color.black.opacity(0.10))
+                                .frame(width: max(3, coverSize.width * 0.025))
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .strokeBorder(Color.black.opacity(0.14), lineWidth: 1)
+                        }
+                        .rotation3DEffect(
+                            .degrees(180),
+                            axis: (x: 0, y: 1, z: 0),
+                            anchor: .leading,
+                            perspective: 0.62
+                        )
+                    } else {
+                        BookCoverArtwork(
+                            title: book.name,
+                            author: book.author,
+                            remoteURL: book.coverUrl,
+                            width: coverSize.width,
+                            height: coverSize.height
+                        )
+                        // An opaque backing prevents transparent image pixels
+                        // from exposing the bookshelf during the expansion.
+                        .background(Color(uiColor: .secondarySystemBackground))
+                    }
+                }
+                .frame(width: coverSize.width, height: coverSize.height)
                 .rotation3DEffect(
                     .degrees(coverAngle),
                     axis: (x: 0, y: 1, z: 0),
@@ -95,7 +122,7 @@ private struct BookshelfCoverTransitionOverlay: View {
                     y: 10 * coverFade
                 )
                 .opacity(coverFade)
-                .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height), alignment: .leading)
+                .frame(width: coverSize.width, height: coverSize.height, alignment: .leading)
                 .position(x: expandedRect.midX, y: expandedRect.midY)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
