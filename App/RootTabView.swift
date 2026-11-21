@@ -14,30 +14,25 @@ private final class BookshelfCoverTransition: ObservableObject {
     @Published var book: Book?
     @Published var sourceFrame: CGRect?
     @Published var progress = 0.0
+    @Published var revealProgress = 0.0
 
     func prepare(book: Book, sourceFrame: CGRect) {
         self.book = book
         self.sourceFrame = sourceFrame
         progress = 0
+        revealProgress = 0
     }
 
     func reset() {
         book = nil
         sourceFrame = nil
         progress = 0
+        revealProgress = 0
     }
 }
 
 private struct BookshelfCoverTransitionOverlay: View {
     @ObservedObject var transition: BookshelfCoverTransition
-    @AppStorage("readerTheme") private var readerTheme = "wechat"
-    @AppStorage("themeMode") private var themeMode = "0"
-
-    private var readerBackgroundColor: Color {
-        let style = themeMode == "3" ? ReaderStylePreset.eInk : ReaderStylePreset.resolve(readerTheme)
-        return Color(uiColor: style.background)
-    }
-
     private func eased(_ value: CGFloat) -> CGFloat {
         let t = min(max(value, 0), 1)
         // Smooth acceleration and deceleration for the four independently
@@ -76,48 +71,30 @@ private struct BookshelfCoverTransitionOverlay: View {
                 let coverAngle = -118 * coverRotationProgress
                 let coverFade = 1 - min(1, max(0, (rawProgress - 0.88) / 0.12))
 
-                ZStack(alignment: .leading) {
-                    // The page surface expands with the book and uses the
-                    // exact same preset color as ReaderView.
-                    Rectangle()
-                        .fill(readerBackgroundColor)
-                        .overlay(alignment: .trailing) {
-                            Rectangle()
-                                .fill(Color.black.opacity(0.08 * (1 - boundsProgress)))
-                                .frame(width: max(1, expandedRect.width * 0.012))
-                        }
-                        .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
-                        .shadow(
-                            color: .black.opacity(0.12 * (1 - boundsProgress)),
-                            radius: 12 * (1 - boundsProgress),
-                            x: 5,
-                            y: 4
-                        )
-
-                    // The cover shares the expanding geometry and rotates
-                    // around its moving leading edge (the book spine).
-                    BookCoverArtwork(
-                        title: book.name,
-                        author: book.author,
-                        remoteURL: book.coverUrl,
-                        width: max(1, expandedRect.width),
-                        height: max(1, expandedRect.height)
-                    )
-                    .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
-                    .rotation3DEffect(
-                        .degrees(coverAngle),
-                        axis: (x: 0, y: 1, z: 0),
-                        anchor: .leading,
-                        perspective: 0.62
-                    )
-                    .shadow(
-                        color: .black.opacity(0.22 * coverFade),
-                        radius: 18 * coverFade,
-                        x: 0,
-                        y: 10 * coverFade
-                    )
-                    .opacity(coverFade)
-                }
+                // The reader is now laid out inside this same expanding page
+                // rectangle below. Keep this overlay limited to the physical
+                // cover, so the bookshelf remains visible outside the book.
+                BookCoverArtwork(
+                    title: book.name,
+                    author: book.author,
+                    remoteURL: book.coverUrl,
+                    width: max(1, expandedRect.width),
+                    height: max(1, expandedRect.height)
+                )
+                .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height))
+                .rotation3DEffect(
+                    .degrees(coverAngle),
+                    axis: (x: 0, y: 1, z: 0),
+                    anchor: .leading,
+                    perspective: 0.62
+                )
+                .shadow(
+                    color: .black.opacity(0.22 * coverFade),
+                    radius: 18 * coverFade,
+                    x: 0,
+                    y: 10 * coverFade
+                )
+                .opacity(coverFade)
                 .frame(width: max(1, expandedRect.width), height: max(1, expandedRect.height), alignment: .leading)
                 .position(x: expandedRect.midX, y: expandedRect.midY)
                 .allowsHitTesting(false)
@@ -313,6 +290,27 @@ private struct BookshelfView: View {
 
     private var displayedBooks: [Book] { library.books(in: selectedGroup, defaultSort: bookshelfSort) }
 
+    private func expandedReaderRect(in geometry: GeometryProxy) -> CGRect {
+        let containerFrame = geometry.frame(in: .global)
+        let screenSize = UIScreen.main.bounds.size
+        let endRect = CGRect(
+            x: -containerFrame.minX,
+            y: -containerFrame.minY,
+            width: screenSize.width,
+            height: screenSize.height
+        )
+
+        guard let sourceFrame = openingCoverFrame else { return endRect }
+        let startRect = sourceFrame.offsetBy(dx: -containerFrame.minX, dy: -containerFrame.minY)
+        let raw = CGFloat(coverTransition.progress)
+        let progress = raw * raw * (3 - 2 * raw)
+        let minX = startRect.minX + (endRect.minX - startRect.minX) * progress
+        let minY = startRect.minY + (endRect.minY - startRect.minY) * progress
+        let maxX = startRect.maxX + (endRect.maxX - startRect.maxX) * progress
+        let maxY = startRect.maxY + (endRect.maxY - startRect.maxY) * progress
+        return CGRect(x: minX, y: minY, width: max(1, maxX - minX), height: max(1, maxY - minY))
+    }
+
     private var recentBook: Book? {
         displayedBooks.filter(BookReadingPresentation.hasStarted)
             .sorted { $0.durChapterTime > $1.durChapterTime }
@@ -446,14 +444,20 @@ private struct BookshelfView: View {
                 // pushing it through the parent NavigationStack. The existing
                 // cover-transition overlay remains above this reader layer.
                 if isOpeningDestination, let book = openingBook {
+                    let readerRect = expandedReaderRect(in: geometry)
                     BookshelfBookDestination(
                         book: book,
                         source: openingSource,
                         preparation: openingPreparation,
+                        isOpeningTransition: openingCoverFrame != nil && coverTransition.revealProgress < 0.999,
+                        openingProgress: coverTransition.revealProgress,
+                        openingTopInset: max(0, -readerRect.minY),
                         onClose: closeReader
                     )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(ReadingTheme.canvas)
+                    .frame(width: readerRect.width, height: readerRect.height)
+                    .clipShape(Rectangle())
+                    .position(x: readerRect.midX, y: readerRect.midY)
+                    .allowsHitTesting(openingCoverFrame == nil || coverTransition.progress >= 0.999)
                     .zIndex(50)
                 }
             }
@@ -530,42 +534,48 @@ private struct BookshelfView: View {
         openingCoverID = animationID
         openingCoverFrame = coverFrames[animationID]
 
-        // Start catalog preparation immediately, in parallel with the cover animation.
         let preparation = BookshelfReadViewModel()
         openingPreparation = preparation
+
+        let hasCoverTransition = openingCoverFrame != nil
+        if let sourceFrame = openingCoverFrame {
+            coverTransition.prepare(book: book, sourceFrame: sourceFrame)
+        }
+
+        // Present the destination immediately. Catalog parsing and chapter
+        // loading run independently and are never allowed to delay the cover.
+        isOpeningDestination = true
+
         Task { @MainActor in
             await preparation.load(book: book, source: source) { report in
                 await library.commitPreparedUpdate(requestedBook: book, report: report)
             }
 
-            // Reuse the same reader model in the destination and prepare only
-            // the current chapter while the transition is in progress.
-            guard let readerModel = preparation.makeReaderModel(source: source) else { return }
             let isLocalEPUB = book.origin == "local"
                 && URL(string: book.bookUrl)?.pathExtension.lowercased() == "epub"
-            guard !isLocalEPUB else { return }
-            await readerModel.load(
-                rules: readerModel.usesReplaceRules ? replaceRules.rules : [],
-                prefetchNextChapter: false
-            )
+            if !isLocalEPUB, let readerModel = preparation.makeReaderModel(source: source) {
+                await readerModel.load(
+                    rules: readerModel.usesReplaceRules ? replaceRules.rules : [],
+                    prefetchNextChapter: false
+                )
+            }
         }
 
-        // Without a measured cover frame, present the reader without a cover transition.
-        guard let sourceFrame = openingCoverFrame else {
-            isOpeningDestination = true
-            return
-        }
-
-        coverTransition.prepare(book: book, sourceFrame: sourceFrame)
-
-        // Render the book at its measured shelf position first. Then one
-        // progress value drives the page expansion and cover opening together.
+        guard hasCoverTransition else { return }
         Task { @MainActor in
+            // Give SwiftUI one frame to mount the reader-sized background.
+            // The actual reader content remains hidden until the 70% point.
             await Task.yield()
+            guard isOpeningDestination, openingBook?.bookUrl == book.bookUrl else { return }
             isAnimatingCover = true
-            isOpeningDestination = true
             withAnimation(.timingCurve(0.30, 0.30, 0.18, 1.0, duration: 1.15)) {
                 coverTransition.progress = 1
+            }
+            // This independent linear clock represents elapsed animation time,
+            // so the 70% content-reveal threshold is exactly 70% of 1.15 seconds
+            // rather than 70% of the eased geometry progress.
+            withAnimation(.linear(duration: 1.15)) {
+                coverTransition.revealProgress = 1
             }
         }
     }
@@ -837,20 +847,32 @@ private struct BookshelfBookDestination: View {
     let book: Book
     let source: BookSource?
     let preparation: BookshelfReadViewModel?
+    let isOpeningTransition: Bool
+    let openingProgress: Double
+    let openingTopInset: CGFloat
     let onClose: () -> Void
 
     var body: some View {
-        if ProcessInfo.processInfo.arguments.contains("-uiDemo"), book.origin != "local" {
-            ReaderView(
-                demoBook: book,
-                chapters: DemoContent.readerChapters,
-                initialIndex: 0,
-                content: DemoContent.readerText,
-                onClose: onClose
-            )
-        } else {
-            BookshelfReadView(book: book, source: source, preparation: preparation, onClose: onClose)
+        Group {
+            if ProcessInfo.processInfo.arguments.contains("-uiDemo"), book.origin != "local" {
+                ReaderView(
+                    demoBook: book,
+                    chapters: DemoContent.readerChapters,
+                    initialIndex: 0,
+                    content: DemoContent.readerText,
+                    onClose: onClose,
+                    isOpeningTransition: isOpeningTransition,
+                    openingProgress: openingProgress,
+                    openingTopInset: openingTopInset
+                )
+            } else {
+                BookshelfReadView(book: book, source: source, preparation: preparation,
+                                  isOpeningTransition: isOpeningTransition,
+                                  openingProgress: openingProgress,
+                                  openingTopInset: openingTopInset, onClose: onClose)
+            }
         }
+        .readingTabBarHidden(!isOpeningTransition)
     }
 }
 
@@ -1175,49 +1197,77 @@ private struct EmptyBookshelfHero: View {
 struct BookshelfReadView: View {
     let book: Book
     let source: BookSource?
+    let isOpeningTransition: Bool
+    let openingProgress: Double
+    let openingTopInset: CGFloat
     private let onClose: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var library: BookLibraryModel
+    @AppStorage("readerTheme") private var readerTheme = "wechat"
+    @AppStorage("themeMode") private var themeMode = "0"
     @StateObject private var model: BookshelfReadViewModel
 
     init(
         book: Book,
         source: BookSource?,
         preparation: BookshelfReadViewModel? = nil,
+        isOpeningTransition: Bool = false,
+        openingProgress: Double = 1,
+        openingTopInset: CGFloat = 0,
         onClose: (() -> Void)? = nil
     ) {
         self.book = book
         self.source = source
+        self.isOpeningTransition = isOpeningTransition
+        self.openingProgress = openingProgress
+        self.openingTopInset = openingTopInset
         self.onClose = onClose
         _model = StateObject(wrappedValue: preparation ?? BookshelfReadViewModel())
     }
 
     var body: some View {
-        Group {
-            if !model.chapters.isEmpty, model.resolvedBook != nil,
-               let readerModel = model.makeReaderModel(source: source) {
-                ReaderView(model: readerModel, onClose: onClose)
-            } else if model.isLoading {
-                openingStateView {
-                    ProgressView("正在打开…")
-                }
-            } else if let errorMessage = model.errorMessage {
-                openingStateView {
-                    ReadingUnavailableView("无法打开书籍", systemImage: "book.closed", description: Text(errorMessage))
-                }
-            } else {
-                openingStateView {
-                    ProgressView("正在打开…")
+        // Keep the expanding reader surface physically opaque from its first
+        // frame. A background modifier on the conditional Group can leave
+        // the transition visually blended with the bookshelf while its child
+        // reader is mounting; an explicit bottom layer makes the page surface
+        // independent of the reader content's reveal opacity.
+        ZStack {
+            openingPlaceholderBackground
+
+            Group {
+                if !model.chapters.isEmpty, model.resolvedBook != nil,
+                   let readerModel = model.makeReaderModel(source: source) {
+                    ReaderView(model: readerModel, onClose: onClose,
+                               isOpeningTransition: isOpeningTransition, openingProgress: openingProgress,
+                               openingTopInset: openingTopInset)
+                } else if model.isLoading {
+                    openingStateView {
+                        ProgressView("正在打开…")
+                    }
+                } else if let errorMessage = model.errorMessage {
+                    openingStateView {
+                        ReadingUnavailableView("无法打开书籍", systemImage: "book.closed", description: Text(errorMessage))
+                    }
+                } else {
+                    openingStateView {
+                        ProgressView("正在打开…")
+                    }
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(ReadingTheme.canvas)
-        .task {
-            await model.load(book: book, source: source) { report in
-                await library.commitPreparedUpdate(requestedBook: book, report: report)
-            }
+    }
+
+    private var openingPlaceholderBackground: Color {
+        if book.origin == "local", URL(string: book.bookUrl)?.pathExtension.lowercased() == "epub" {
+            return Color(uiColor: .systemBackground)
         }
+        let preset = themeMode == "3" ? ReaderStylePreset.eInk : ReaderStylePreset.resolve(readerTheme)
+        return Color(uiColor: preset.background)
+    }
+
+    private var openingContentOpacity: Double {
+        min(max((openingProgress - 0.70) / 0.30, 0), 1)
     }
 
     private func openingStateView<Content: View>(@ViewBuilder content: () -> Content) -> some View {
@@ -1239,6 +1289,7 @@ struct BookshelfReadView: View {
             Spacer()
         }
         .padding(.horizontal, 20)
+        .opacity(isOpeningTransition ? openingContentOpacity : 1)
     }
 
     private func close() {
