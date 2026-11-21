@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct ReaderView: View {
     private var usesEPUBLayout = true
     private var onClose: (() -> Void)? = nil
+    private var isOpeningTransition = false
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -51,6 +52,7 @@ struct ReaderView: View {
     @State private var currentPage = 1
     @State private var totalPages = 1
     @State private var readerRenderRevision = 0
+    @State private var didActivateReadingPresentation = false
     @State private var isWaitingForNextChapter = false
     @State private var isWaitingForPreviousChapter = false
     @State private var httpTTSEngines: [HttpTTS] = []
@@ -131,8 +133,9 @@ struct ReaderView: View {
     @AppStorage("clickActionBottomRight") private var clickActionBR = 1
 
 
-    init(model: ReaderViewModel, onClose: (() -> Void)? = nil) {
+    init(model: ReaderViewModel, onClose: (() -> Void)? = nil, isOpeningTransition: Bool = false) {
         self.onClose = onClose
+        self.isOpeningTransition = isOpeningTransition
         _pageAnimation = State(initialValue: model.book.readConfig?.pageAnim.flatMap { $0 >= 0 ? $0 : nil }
             ?? Self.globalPageAnimation())
         _model = StateObject(wrappedValue: model)
@@ -165,9 +168,11 @@ struct ReaderView: View {
         chapters: [BookChapter],
         initialIndex: Int,
         content: String,
-        onClose: (() -> Void)? = nil
+        onClose: (() -> Void)? = nil,
+        isOpeningTransition: Bool = false
     ) {
         self.onClose = onClose
+        self.isOpeningTransition = isOpeningTransition
         var readerChapters = chapters
         var readerInitialIndex = initialIndex
         var readerContent = content
@@ -221,7 +226,8 @@ struct ReaderView: View {
 
     var body: some View {
         if usesEPUBLayout, book.origin == "local", URL(string: book.bookUrl)?.pathExtension.lowercased() == "epub" {
-            EPUBReaderView(book: book, chapters: model.chapters, initialIndex: model.currentIndex, onClose: onClose)
+            EPUBReaderView(book: book, chapters: model.chapters, initialIndex: model.currentIndex,
+                           onClose: onClose, isOpeningTransition: isOpeningTransition)
         } else {
             textReaderBody
         }
@@ -229,15 +235,15 @@ struct ReaderView: View {
 
     private var textReaderBody: some View {
         readerCanvas
-        .preferredColorScheme(resolvedStyle.id == "night" ? .dark : .light)
-        .readingTabBarHidden()
+        .preferredColorScheme(isOpeningTransition ? nil : (resolvedStyle.id == "night" ? .dark : .light))
+        .readingTabBarHidden(!isOpeningTransition)
         .navigationBarBackButtonHidden(true)
         .background {
             ReaderInteractivePopEnabler()
                 .frame(width: 0, height: 0)
         }
-        .statusBarHidden(hideStatusBar)
-        .readingHomeIndicatorHidden(hideHomeIndicator)
+        .statusBarHidden(!isOpeningTransition && hideStatusBar)
+        .readingHomeIndicatorHidden(!isOpeningTransition && hideHomeIndicator)
         .overlay(alignment: .top) {
             if showsReaderMenu {
                 readerTopChrome
@@ -249,7 +255,7 @@ struct ReaderView: View {
             Button("好", role: .cancel) { readerSettingSaveError = nil }
         } message: { Text(readerSettingSaveError ?? "") }
         .onAppear {
-            activity.beginReading(book)
+            if !isOpeningTransition { activateReadingPresentation() }
             speech.onNextChapter = { moveSpeechToChapter(direction: 1) }
             speech.onPreviousChapter = { moveSpeechToChapter(direction: -1) }
             speech.onRemoteStop = {
@@ -257,17 +263,7 @@ struct ReaderView: View {
                 speechTimerRemaining = 0
                 resumesSpeechAfterChapterLoad = false
             }
-            UIDevice.current.isBatteryMonitoringEnabled = true
-            brightnessBeforeReading = Double(UIScreen.main.brightness)
-            if storedReaderBrightness > 0.05 {
-                followsSystemBrightness = false
-                readerBrightness = storedReaderBrightness
-                UIScreen.main.brightness = CGFloat(storedReaderBrightness)
-            } else {
-                readerBrightness = brightnessBeforeReading
-            }
             backgroundImage = ReaderBackgroundStore.load()
-            ReaderScreenOrientation.apply(screenOrientation)
             Task { await loadHTTPEngines() }
             if ProcessInfo.processInfo.arguments.contains("-uiDemoBookmarks") {
                 showsBookmarks = true
@@ -279,17 +275,22 @@ struct ReaderView: View {
                 DispatchQueue.main.async { showsStyleControls = true }
             }
         }
+        .onChange(of: isOpeningTransition) { isTransitioning in
+            if !isTransitioning { activateReadingPresentation() }
+        }
         .onDisappear {
             isAutoReading = false
             UIApplication.shared.isIdleTimerDisabled = false
             if speech.isSpeaking || speech.isPaused { speech.toggle(text: "") }
             saveProgress(immediate: true)
-            ReaderScreenOrientation.restoreApplicationDefault()
-            activity.cancelReading(book)
-            UIDevice.current.isBatteryMonitoringEnabled = false
-            if !followsSystemBrightness {
-                UIScreen.main.brightness = CGFloat(brightnessBeforeReading)
+            if didActivateReadingPresentation {
+                ReaderScreenOrientation.restoreApplicationDefault()
+                activity.cancelReading(book)
+                if !followsSystemBrightness {
+                    UIScreen.main.brightness = CGFloat(brightnessBeforeReading)
+                }
             }
+            UIDevice.current.isBatteryMonitoringEnabled = false
             speechTimerTask?.cancel()
             speechTimerRemaining = 0
             speech.onNextChapter = nil
@@ -443,6 +444,22 @@ struct ReaderView: View {
         }
     }
 
+
+    private func activateReadingPresentation() {
+        guard !didActivateReadingPresentation else { return }
+        didActivateReadingPresentation = true
+        activity.beginReading(book)
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        brightnessBeforeReading = Double(UIScreen.main.brightness)
+        if storedReaderBrightness > 0.05 {
+            followsSystemBrightness = false
+            readerBrightness = storedReaderBrightness
+            UIScreen.main.brightness = CGFloat(storedReaderBrightness)
+        } else {
+            readerBrightness = brightnessBeforeReading
+        }
+        ReaderScreenOrientation.apply(screenOrientation)
+    }
 
     private var readerCanvas: some View {
         ZStack {
