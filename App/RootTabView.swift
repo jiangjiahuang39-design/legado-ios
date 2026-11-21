@@ -473,6 +473,14 @@ private struct BookshelfView: View {
                         onClose: closeReader
                     )
                     .frame(width: readerRect.width, height: readerRect.height)
+                    // Diagnostic only: paint the actual animated page rectangle
+                    // with a fully opaque, unmistakable color while it is opening.
+                    // This isolates the destination surface from its child views.
+                    .overlay {
+                        if isOpeningTransition {
+                            Rectangle().fill(Color(red: 0.0, green: 0.85, blue: 0.95))
+                        }
+                    }
                     .clipShape(Rectangle())
                     .position(x: readerRect.midX, y: readerRect.midY)
                     .allowsHitTesting(openingCoverFrame == nil || coverTransition.progress >= 0.999)
