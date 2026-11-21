@@ -14,17 +14,20 @@ private final class BookshelfCoverTransition: ObservableObject {
     @Published var book: Book?
     @Published var sourceFrame: CGRect?
     @Published var progress = 0.0
+    @Published var revealProgress = 0.0
 
     func prepare(book: Book, sourceFrame: CGRect) {
         self.book = book
         self.sourceFrame = sourceFrame
         progress = 0
+        revealProgress = 0
     }
 
     func reset() {
         book = nil
         sourceFrame = nil
         progress = 0
+        revealProgress = 0
     }
 }
 
@@ -446,7 +449,8 @@ private struct BookshelfView: View {
                         book: book,
                         source: openingSource,
                         preparation: openingPreparation,
-                        isOpeningTransition: openingCoverFrame != nil && coverTransition.progress < 0.999,
+                        isOpeningTransition: openingCoverFrame != nil && coverTransition.revealProgress < 0.999,
+                        openingProgress: coverTransition.revealProgress,
                         openingTopInset: max(0, -readerRect.minY),
                         onClose: closeReader
                     )
@@ -538,13 +542,11 @@ private struct BookshelfView: View {
             coverTransition.prepare(book: book, sourceFrame: sourceFrame)
         }
 
-        // Mount the destination at the measured cover rectangle immediately.
-        // Keep the cover at progress zero while the catalog and current chapter
-        // are prepared, so a slow network request cannot outlive the animation.
+        // Present the destination immediately. Catalog parsing and chapter
+        // loading run independently and are never allowed to delay the cover.
         isOpeningDestination = true
 
         Task { @MainActor in
-            await Task.yield()
             await preparation.load(book: book, source: source) { report in
                 await library.commitPreparedUpdate(requestedBook: book, report: report)
             }
@@ -557,18 +559,23 @@ private struct BookshelfView: View {
                     prefetchNextChapter: false
                 )
             }
+        }
 
-            guard hasCoverTransition,
-                  isOpeningDestination,
-                  openingBook?.bookUrl == book.bookUrl else { return }
-
-            // Allow SwiftUI to mount the fully prepared ReaderView at the
-            // source size before the single shared expansion animation begins.
+        guard hasCoverTransition else { return }
+        Task { @MainActor in
+            // Give SwiftUI one frame to mount the reader-sized background.
+            // The actual reader content remains hidden until the 70% point.
             await Task.yield()
             guard isOpeningDestination, openingBook?.bookUrl == book.bookUrl else { return }
             isAnimatingCover = true
             withAnimation(.timingCurve(0.30, 0.30, 0.18, 1.0, duration: 1.15)) {
                 coverTransition.progress = 1
+            }
+            // This independent linear clock represents elapsed animation time,
+            // so the 70% content-reveal threshold is exactly 70% of 1.15 seconds
+            // rather than 70% of the eased geometry progress.
+            withAnimation(.linear(duration: 1.15)) {
+                coverTransition.revealProgress = 1
             }
         }
     }
@@ -841,6 +848,7 @@ private struct BookshelfBookDestination: View {
     let source: BookSource?
     let preparation: BookshelfReadViewModel?
     let isOpeningTransition: Bool
+    let openingProgress: Double
     let openingTopInset: CGFloat
     let onClose: () -> Void
 
@@ -853,11 +861,13 @@ private struct BookshelfBookDestination: View {
                 content: DemoContent.readerText,
                 onClose: onClose,
                 isOpeningTransition: isOpeningTransition,
+                openingProgress: openingProgress,
                 openingTopInset: openingTopInset
             )
         } else {
             BookshelfReadView(book: book, source: source, preparation: preparation,
                               isOpeningTransition: isOpeningTransition,
+                              openingProgress: openingProgress,
                               openingTopInset: openingTopInset, onClose: onClose)
         }
     }
@@ -1185,10 +1195,13 @@ struct BookshelfReadView: View {
     let book: Book
     let source: BookSource?
     let isOpeningTransition: Bool
+    let openingProgress: Double
     let openingTopInset: CGFloat
     private let onClose: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var library: BookLibraryModel
+    @AppStorage("readerTheme") private var readerTheme = "wechat"
+    @AppStorage("themeMode") private var themeMode = "0"
     @StateObject private var model: BookshelfReadViewModel
 
     init(
@@ -1196,12 +1209,14 @@ struct BookshelfReadView: View {
         source: BookSource?,
         preparation: BookshelfReadViewModel? = nil,
         isOpeningTransition: Bool = false,
+        openingProgress: Double = 1,
         openingTopInset: CGFloat = 0,
         onClose: (() -> Void)? = nil
     ) {
         self.book = book
         self.source = source
         self.isOpeningTransition = isOpeningTransition
+        self.openingProgress = openingProgress
         self.openingTopInset = openingTopInset
         self.onClose = onClose
         _model = StateObject(wrappedValue: preparation ?? BookshelfReadViewModel())
@@ -1212,7 +1227,8 @@ struct BookshelfReadView: View {
             if !model.chapters.isEmpty, model.resolvedBook != nil,
                let readerModel = model.makeReaderModel(source: source) {
                 ReaderView(model: readerModel, onClose: onClose,
-                           isOpeningTransition: isOpeningTransition, openingTopInset: openingTopInset)
+                           isOpeningTransition: isOpeningTransition, openingProgress: openingProgress,
+                           openingTopInset: openingTopInset)
             } else if model.isLoading {
                 openingStateView {
                     ProgressView("正在打开…")
@@ -1228,12 +1244,19 @@ struct BookshelfReadView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(ReadingTheme.canvas)
-        .task {
-            await model.load(book: book, source: source) { report in
-                await library.commitPreparedUpdate(requestedBook: book, report: report)
-            }
+        .background(openingPlaceholderBackground)
+    }
+
+    private var openingPlaceholderBackground: Color {
+        if book.origin == "local", URL(string: book.bookUrl)?.pathExtension.lowercased() == "epub" {
+            return Color(uiColor: .systemBackground)
         }
+        let preset = themeMode == "3" ? ReaderStylePreset.eInk : ReaderStylePreset.resolve(readerTheme)
+        return Color(uiColor: preset.background)
+    }
+
+    private var openingContentOpacity: Double {
+        min(max((openingProgress - 0.70) / 0.30, 0), 1)
     }
 
     private func openingStateView<Content: View>(@ViewBuilder content: () -> Content) -> some View {
@@ -1255,6 +1278,7 @@ struct BookshelfReadView: View {
             Spacer()
         }
         .padding(.horizontal, 20)
+        .opacity(isOpeningTransition ? openingContentOpacity : 1)
     }
 
     private func close() {
