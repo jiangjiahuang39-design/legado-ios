@@ -7,6 +7,7 @@ struct ReaderView: View {
     private var usesEPUBLayout = true
     private var onClose: (() -> Void)? = nil
     private var isOpeningTransition = false
+    private var openingTopInset: CGFloat = 0
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -133,9 +134,11 @@ struct ReaderView: View {
     @AppStorage("clickActionBottomRight") private var clickActionBR = 1
 
 
-    init(model: ReaderViewModel, onClose: (() -> Void)? = nil, isOpeningTransition: Bool = false) {
+    init(model: ReaderViewModel, onClose: (() -> Void)? = nil,
+         isOpeningTransition: Bool = false, openingTopInset: CGFloat = 0) {
         self.onClose = onClose
         self.isOpeningTransition = isOpeningTransition
+        self.openingTopInset = openingTopInset
         _pageAnimation = State(initialValue: model.book.readConfig?.pageAnim.flatMap { $0 >= 0 ? $0 : nil }
             ?? Self.globalPageAnimation())
         _model = StateObject(wrappedValue: model)
@@ -169,10 +172,12 @@ struct ReaderView: View {
         initialIndex: Int,
         content: String,
         onClose: (() -> Void)? = nil,
-        isOpeningTransition: Bool = false
+        isOpeningTransition: Bool = false,
+        openingTopInset: CGFloat = 0
     ) {
         self.onClose = onClose
         self.isOpeningTransition = isOpeningTransition
+        self.openingTopInset = openingTopInset
         var readerChapters = chapters
         var readerInitialIndex = initialIndex
         var readerContent = content
@@ -227,7 +232,8 @@ struct ReaderView: View {
     var body: some View {
         if usesEPUBLayout, book.origin == "local", URL(string: book.bookUrl)?.pathExtension.lowercased() == "epub" {
             EPUBReaderView(book: book, chapters: model.chapters, initialIndex: model.currentIndex,
-                           onClose: onClose, isOpeningTransition: isOpeningTransition)
+                           onClose: onClose, isOpeningTransition: isOpeningTransition,
+                           openingTopInset: openingTopInset)
         } else {
             textReaderBody
         }
@@ -247,6 +253,7 @@ struct ReaderView: View {
         .overlay(alignment: .top) {
             if showsReaderMenu {
                 readerTopChrome
+                    .padding(.top, openingTopInset)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
@@ -466,6 +473,7 @@ struct ReaderView: View {
             readerContent
             readerMenuDismissOverlay
         }
+        .padding(.top, openingTopInset)
         .background {
             ZStack {
                 backgroundColor
