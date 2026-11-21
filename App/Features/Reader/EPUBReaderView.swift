@@ -155,6 +155,7 @@ final class EPUBReaderModel: ObservableObject, EPUBNavigatorDelegate {
 struct EPUBReaderView: View {
     private let onClose: (() -> Void)?
     private let isOpeningTransition: Bool
+    private let openingProgress: Double
     private let openingTopInset: CGFloat
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -176,11 +177,16 @@ struct EPUBReaderView: View {
     @AppStorage("epubTheme") private var theme = "system"
 
     init(book: Book, chapters: [BookChapter], initialIndex: Int, onClose: (() -> Void)? = nil,
-         isOpeningTransition: Bool = false, openingTopInset: CGFloat = 0) {
+         isOpeningTransition: Bool = false, openingProgress: Double = 1, openingTopInset: CGFloat = 0) {
         self.onClose = onClose
         self.isOpeningTransition = isOpeningTransition
+        self.openingProgress = openingProgress
         self.openingTopInset = openingTopInset
         _model = StateObject(wrappedValue: EPUBReaderModel(book: book, chapters: chapters, initialIndex: initialIndex))
+    }
+
+    private var openingContentOpacity: Double {
+        min(max((openingProgress - 0.70) / 0.30, 0), 1)
     }
 
     private func activateReadingSession() {
@@ -216,10 +222,16 @@ struct EPUBReaderView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .opacity(isOpeningTransition ? openingContentOpacity : 1)
             if model.showsControls, model.navigator != nil { bottomBar }
         }
         .padding(.top, openingTopInset)
-        .background(Color(uiColor: .systemBackground))
+        .background {
+            Color(uiColor: .systemBackground)
+            if !isOpeningTransition {
+                Color(uiColor: .systemBackground).ignoresSafeArea()
+            }
+        }
         .navigationBarHidden(true)
         .readingTabBarHidden(!isOpeningTransition)
         .task {
