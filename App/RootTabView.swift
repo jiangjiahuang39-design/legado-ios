@@ -100,24 +100,36 @@ private final class BookshelfCoverTransition: ObservableObject {
     func captureSnapshot(from sourceView: UIView) -> Bool {
         guard let window = sourceView.window,
               sourceView.bounds.width > 1,
-              sourceView.bounds.height > 1 else { return false }
+              sourceView.bounds.height > 1,
+              let rootView = window.rootViewController?.view,
+              rootView.window === window else { return false }
 
-        // Capture the real, already-mounted window, then crop to the probe view
-        // placed exactly over the visible shelf cover. This preserves SwiftUI
-        // Text, Canvas, cached/async images, and the current Environment.
-        let windowRenderer = UIGraphicsImageRenderer(bounds: window.bounds)
-        let windowImage = windowRenderer.image { _ in
-            _ = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        // Capture from the app's actual root content view rather than UIWindow.
+        // UIWindow.drawHierarchy can return an empty/black image on some SwiftUI
+        // hosting configurations even though the window itself is visible.
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = UIScreen.main.scale
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(bounds: rootView.bounds, format: format)
+        let rootImage = renderer.image { _ in
+            _ = rootView.drawHierarchy(
+                in: rootView.bounds,
+                afterScreenUpdates: true
+            )
         }
 
-        guard let cgImage = windowImage.cgImage else { return false }
-        let rectInWindow = sourceView.convert(sourceView.bounds, to: window)
-        let scale = windowImage.scale
+        // drawHierarchy may return false when a special hosted layer cannot be
+        // reproduced perfectly, while still drawing the visible SwiftUI cover.
+        // Judge the captured bitmap and crop, not that aggregate return flag.
+        guard let cgImage = rootImage.cgImage else { return false }
+
+        let rectInRoot = sourceView.convert(sourceView.bounds, to: rootView)
+        let scale = rootImage.scale
         let cropRect = CGRect(
-            x: rectInWindow.minX * scale,
-            y: rectInWindow.minY * scale,
-            width: rectInWindow.width * scale,
-            height: rectInWindow.height * scale
+            x: (rectInRoot.minX - rootView.bounds.minX) * scale,
+            y: (rectInRoot.minY - rootView.bounds.minY) * scale,
+            width: rectInRoot.width * scale,
+            height: rectInRoot.height * scale
         ).integral
 
         guard cropRect.width > 1, cropRect.height > 1,
@@ -126,7 +138,7 @@ private final class BookshelfCoverTransition: ObservableObject {
               cropRect.maxY <= CGFloat(cgImage.height),
               let cropped = cgImage.cropping(to: cropRect) else { return false }
 
-        let snapshot = UIImage(cgImage: cropped, scale: windowImage.scale, orientation: .up)
+        let snapshot = UIImage(cgImage: cropped, scale: rootImage.scale, orientation: .up)
         guard snapshot.size.width > 1, snapshot.size.height > 1 else { return false }
         coverSnapshot = snapshot
         return true
