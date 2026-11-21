@@ -256,9 +256,10 @@ struct RootTabView: View {
         // Keep the transition above the entire TabView, including its tab bar.
         // An overlay attached to an individual tab's NavigationStack is still
         // underneath the system-managed tab bar.
+        // Diagnostic only: temporarily hide the physical-cover overlay so we
+        // can inspect whether the destination page surface itself is opaque.
         .overlay {
-            BookshelfCoverTransitionOverlay(transition: bookshelfCoverTransition)
-                .zIndex(1_000)
+            EmptyView()
         }
     }
 
