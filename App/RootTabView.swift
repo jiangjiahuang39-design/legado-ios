@@ -483,8 +483,8 @@ private struct BookshelfView: View {
                 // Diagnostic only: draw the same opaque test surface as a sibling
                 // of the destination, at the parent ZStack level. This bypasses
                 // any opacity or compositing applied inside BookshelfBookDestination.
-                if isOpeningDestination, openingCoverFrame != nil,
-                   coverTransition.revealProgress < 0.999 {
+                // Keep the surface mounted after expansion to inspect its opacity.
+                if isOpeningDestination, openingCoverFrame != nil {
                     let readerRect = expandedReaderRect(in: geometry)
                     Rectangle()
                         .fill(Color(red: 0.0, green: 0.85, blue: 0.95))
