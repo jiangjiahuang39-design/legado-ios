@@ -7,6 +7,7 @@ struct ReaderView: View {
     private var usesEPUBLayout = true
     private var onClose: (() -> Void)? = nil
     private var isOpeningTransition = false
+    private var openingProgress: Double = 1
     private var openingTopInset: CGFloat = 0
 
     @Environment(\.dismiss) private var dismiss
@@ -135,9 +136,10 @@ struct ReaderView: View {
 
 
     init(model: ReaderViewModel, onClose: (() -> Void)? = nil,
-         isOpeningTransition: Bool = false, openingTopInset: CGFloat = 0) {
+         isOpeningTransition: Bool = false, openingProgress: Double = 1, openingTopInset: CGFloat = 0) {
         self.onClose = onClose
         self.isOpeningTransition = isOpeningTransition
+        self.openingProgress = openingProgress
         self.openingTopInset = openingTopInset
         _pageAnimation = State(initialValue: model.book.readConfig?.pageAnim.flatMap { $0 >= 0 ? $0 : nil }
             ?? Self.globalPageAnimation())
@@ -173,10 +175,12 @@ struct ReaderView: View {
         content: String,
         onClose: (() -> Void)? = nil,
         isOpeningTransition: Bool = false,
+        openingProgress: Double = 1,
         openingTopInset: CGFloat = 0
     ) {
         self.onClose = onClose
         self.isOpeningTransition = isOpeningTransition
+        self.openingProgress = openingProgress
         self.openingTopInset = openingTopInset
         var readerChapters = chapters
         var readerInitialIndex = initialIndex
@@ -233,7 +237,7 @@ struct ReaderView: View {
         if usesEPUBLayout, book.origin == "local", URL(string: book.bookUrl)?.pathExtension.lowercased() == "epub" {
             EPUBReaderView(book: book, chapters: model.chapters, initialIndex: model.currentIndex,
                            onClose: onClose, isOpeningTransition: isOpeningTransition,
-                           openingTopInset: openingTopInset)
+                           openingProgress: openingProgress, openingTopInset: openingTopInset)
         } else {
             textReaderBody
         }
@@ -471,21 +475,33 @@ struct ReaderView: View {
     private var readerCanvas: some View {
         ZStack {
             readerContent
+                .opacity(isOpeningTransition ? openingContentOpacity : 1)
             readerMenuDismissOverlay
         }
         .padding(.top, openingTopInset)
         .background {
             ZStack {
                 backgroundColor
-                if let backgroundImage = activeBackgroundImage {
+                if (!isOpeningTransition || openingProgress > 0.70),
+                   let backgroundImage = activeBackgroundImage {
                     Image(uiImage: backgroundImage)
                         .resizable()
                         .scaledToFill()
+                        .opacity(isOpeningTransition ? openingContentOpacity : 1)
                 }
             }
             .clipped()
-            .ignoresSafeArea()
+            .background {
+                if !isOpeningTransition {
+                    backgroundColor.ignoresSafeArea()
+                }
+            }
         }
+    }
+
+    private var openingContentOpacity: Double {
+        let progress = min(max((openingProgress - 0.70) / 0.30, 0), 1)
+        return progress
     }
 
     @ViewBuilder private var readerContent: some View {
@@ -503,7 +519,7 @@ struct ReaderView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .foregroundStyle(foregroundColor)
-            .background(backgroundColor.ignoresSafeArea())
+            .background(backgroundColor)
             .contentShape(Rectangle())
             .onTapGesture { showsReaderMenu.toggle() }
             .transition(.opacity)
@@ -521,7 +537,7 @@ struct ReaderView: View {
             .padding(24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .foregroundStyle(foregroundColor)
-            .background(backgroundColor.ignoresSafeArea())
+            .background(backgroundColor)
         } else {
             VStack(spacing: 0) {
                 if headerVisible { readerTipBar(isHeader: true) }
