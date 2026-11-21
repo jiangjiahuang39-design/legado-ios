@@ -184,7 +184,16 @@ private struct BookshelfCoverTransitionOverlay: View {
             if transition.isVisible, let book = transition.book, let sourceFrame = transition.sourceFrame {
                 let globalFrame = geometry.frame(in: .global)
                 let startRect = sourceFrame.offsetBy(dx: -globalFrame.minX, dy: -globalFrame.minY)
-                let endRect = CGRect(origin: .zero, size: geometry.size)
+                // Match the destination reader's full-screen target rectangle.
+                // The overlay may inherit a safe-area-sized frame from TabView,
+                // so its local origin is not guaranteed to be the screen origin.
+                let screenSize = UIScreen.main.bounds.size
+                let endRect = CGRect(
+                    x: -globalFrame.minX,
+                    y: -globalFrame.minY,
+                    width: screenSize.width,
+                    height: screenSize.height
+                )
                 let rawProgress = CGFloat(transition.progress)
                 let boundsProgress = eased(rawProgress)
 
