@@ -851,6 +851,16 @@ private struct BookshelfBookDestination: View {
     let openingProgress: Double
     let openingTopInset: CGFloat
     let onClose: () -> Void
+    @AppStorage("readerTheme") private var readerTheme = "wechat"
+    @AppStorage("themeMode") private var themeMode = "0"
+
+    private var openingPageBackground: Color {
+        if book.origin == "local", URL(string: book.bookUrl)?.pathExtension.lowercased() == "epub" {
+            return Color(uiColor: .systemBackground)
+        }
+        let preset = themeMode == "3" ? ReaderStylePreset.eInk : ReaderStylePreset.resolve(readerTheme)
+        return Color(uiColor: preset.background)
+    }
 
     var body: some View {
         Group {
@@ -872,6 +882,9 @@ private struct BookshelfBookDestination: View {
                                   openingTopInset: openingTopInset, onClose: onClose)
             }
         }
+        // Keep the expanding destination viewport opaque independently of
+        // the reader's internal content/reveal layers.
+        .background(openingPageBackground)
         .readingTabBarHidden(!isOpeningTransition)
     }
 }
