@@ -281,7 +281,7 @@ struct ReadingProgressLine: View {
     }
 }
 
-private final class BookCoverCache: @unchecked Sendable {
+final class BookCoverCache: @unchecked Sendable {
     static let shared = BookCoverCache()
     private let cache: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
