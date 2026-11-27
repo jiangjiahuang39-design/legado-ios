@@ -374,7 +374,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
             guard script.utf8.count <= maximumScriptLength else {
                 throw RuleEngineError.resourceLimit(rule: script, detail: "JavaScript 规则超过长度上限")
             }
-            try rejectUnboundedExecution(script)
+            let guardedSource = try guardedScript(script)
             guard let context = JSContext() else {
                 throw RuleEngineError.invalidInput(rule: script, expected: "无法创建 JavaScriptCore 上下文")
             }
@@ -398,7 +398,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
                     context.exception = nil
                     installChapter(in: context, chapter: formatted[index])
                     context.setObject(index + 1, forKeyedSubscript: "index" as NSString)
-                    let value = context.evaluateScript(script)
+                    let value = context.evaluateScript(guardedSource)
                     // Rhino unwraps null/undefined to null: keep the old title.
                     let title = value.flatMap { $0.isNull || $0.isUndefined ? nil : $0.toString() }
                     if let exceptionMessage {
@@ -446,7 +446,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
         guard script.utf8.count <= maximumScriptLength else {
             throw RuleEngineError.resourceLimit(rule: script, detail: "JavaScript 规则超过长度上限")
         }
-        try rejectUnboundedExecution(script)
+        let guardedSource = try guardedScript(script)
 
         let box = JSVariableBox(executionContext.rssArticle?.variableMap.merging(executionContext.variables) { _, current in current }
             ?? executionContext.variables)
@@ -475,6 +475,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
         context.setObject((executionContext.content ?? result).foundationObject, forKeyedSubscript: "src" as NSString)
         context.setObject(result.foundationObject, forKeyedSubscript: "$" as NSString)
         context.setObject(executionContext.baseURL, forKeyedSubscript: "baseUrl" as NSString)
+        context.evaluateScript(Self.structuredValuePrelude)
         context.setObject(executionContext.key ?? "", forKeyedSubscript: "key" as NSString)
         context.setObject(executionContext.page ?? 0, forKeyedSubscript: "page" as NSString)
         installJava(in: context, variables: box, result: result, executionContext: executionContext)
@@ -507,21 +508,21 @@ public struct JavaScriptRuleEvaluator: Sendable {
             guard library.utf8.count <= maximumLibraryLength else {
                 throw RuleEngineError.resourceLimit(rule: library, detail: "书源 jsLib 超过长度上限")
             }
-            try rejectUnboundedExecution(library)
-            context.evaluateScript(library)
+            context.evaluateScript(try guardedScript(library))
             if let exceptionMessage {
                 throw RuleEngineError.malformedRule(rule: library, detail: "书源 jsLib 执行失败：\(exceptionMessage)")
             }
         }
 
-        let evaluated = context.evaluateScript(script)
+        let evaluated = context.evaluateScript(guardedSource)
         if let exceptionMessage {
             throw RuleEngineError.malformedRule(rule: script, detail: "JavaScript 执行失败：\(exceptionMessage)")
         }
         // JavaString supplies getBytes() on a boxed JS String. JSC otherwise
         // bridges it as {"0":"第", "1":"一", ...}, corrupting decrypted text.
-        let normalized = evaluated.flatMap {
-            context.objectForKeyedSubscript("__legadoUnboxString")?.call(withArguments: [$0])
+        let normalized = evaluated.flatMap { value -> JSValue? in
+            let prepared = context.objectForKeyedSubscript("__legadoJsoupNormalize")?.call(withArguments: [value]) ?? value
+            return context.objectForKeyedSubscript("__legadoUnboxString")?.call(withArguments: [prepared])
         }
         let value: JSONValue
         if stringifyResult {
@@ -971,12 +972,19 @@ public struct JavaScriptRuleEvaluator: Sendable {
         java?.setObject(timeFormat, forKeyedSubscript: "timeFormat" as NSString)
         java?.setObject(randomUUID, forKeyedSubscript: "randomUUID" as NSString)
         java?.setObject(deviceID, forKeyedSubscript: "androidId" as NSString)
+        java?.setObject(deviceID, forKeyedSubscript: "deviceID" as NSString)
+        let sleep: @convention(block) (Any?) -> Void = { value in
+            let milliseconds = max(0, min(Self.number(value) ?? 0, 10_000))
+            Thread.sleep(forTimeInterval: milliseconds / 1000)
+        }
+        java?.setObject(sleep, forKeyedSubscript: "sleep" as NSString)
         java?.setObject(getTag, forKeyedSubscript: "getTag" as NSString)
         java?.setObject(logValue, forKeyedSubscript: "log" as NSString)
         java?.setObject(logValue, forKeyedSubscript: "logType" as NSString)
         java?.setObject(logValue, forKeyedSubscript: "toast" as NSString)
         java?.setObject(logValue, forKeyedSubscript: "longToast" as NSString)
         java?.setObject(urlEncode, forKeyedSubscript: "encodeURI" as NSString)
+        java?.setObject(urlEncode, forKeyedSubscript: "urlEncode" as NSString)
         java?.setObject(getCookieHeader, forKeyedSubscript: "getCookieHeader" as NSString)
         java?.setObject(getCookieValue, forKeyedSubscript: "__getCookieValue" as NSString)
         java?.setObject(setCookie, forKeyedSubscript: "setCookie" as NSString)
@@ -996,6 +1004,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
             java?.setObject(refresh, forKeyedSubscript: "refreshExplore" as NSString)
         }
         context.setObject(java, forKeyedSubscript: "java" as NSString)
+        LegadoCryptoBridge.install(on: java, in: context)
         context.evaluateScript("""
             (function () {
               var getVariable = java.get;
@@ -1032,6 +1041,7 @@ public struct JavaScriptRuleEvaluator: Sendable {
                 return responseOf(java.__directRequest('GET', target, null, headers || {}, timeout));
               };
               function extractRule(rule, content, mode, isUrl, unescape) {
+                if ((content === null || content === undefined) && java.__hasContent) content = java.__content;
                 var fragment = content && typeof content === 'object' && typeof content.__legadoHTML === 'string';
                 var response = java.__getRule(String(rule == null ? '' : rule), fragment ? content.__legadoHTML : content == null ? src : content,
                   mode, Boolean(isUrl), Boolean(fragment), unescape !== false);
@@ -1069,6 +1079,62 @@ public struct JavaScriptRuleEvaluator: Sendable {
               java.getStringList = function (rule, content, isUrl) { return listOf(extractRule(rule, content, 'strings', isUrl)); };
               java.getElement = function (rule, content) { return elementOf(extractRule(rule, content, 'element', false)); };
               java.getElements = function (rule, content) { return elementOf(extractRule(rule, content, 'elements', false)); };
+              java.setContent = function (content, baseUrl) {
+                java.__hasContent = true;
+                java.__content = content;
+                return java;
+              };
+              java.toNumChapter = function (title) {
+                if (title === null || title === undefined) return null;
+                var text = String(title);
+                var digits = { '零': 0, '〇': 0, '一': 1, '壹': 1, '二': 2, '贰': 2, '两': 2, '三': 3, '叁': 3, '四': 4, '肆': 4,
+                               '五': 5, '伍': 5, '六': 6, '陆': 6, '七': 7, '柒': 7, '八': 8, '捌': 8, '九': 9, '玖': 9 };
+                var units = { '十': 10, '拾': 10, '百': 100, '佰': 100, '千': 1000, '仟': 1000 };
+                function toInt(str) {
+                  if (/^\\d+$/.test(str)) return parseInt(str, 10);
+                  var hasUnit = /[十拾百佰千仟万]/.test(str);
+                  if (!hasUnit) {
+                    var joined = '';
+                    for (var i = 0; i < str.length; i++) {
+                      if (!(str.charAt(i) in digits)) return null;
+                      joined += digits[str.charAt(i)];
+                    }
+                    return parseInt(joined, 10);
+                  }
+                  var total = 0, section = 0, number = 0;
+                  for (var j = 0; j < str.length; j++) {
+                    var ch = str.charAt(j);
+                    if (ch in digits) { number = digits[ch]; }
+                    else if (ch in units) { section += (number === 0 ? 1 : number) * units[ch]; number = 0; }
+                    else if (ch === '万') { total += (section + number) * 10000; section = 0; number = 0; }
+                    else return null;
+                  }
+                  return total + section + number;
+                }
+                return text.replace(/(第)([\\d零〇一二两三四五六七八九十百千万壹贰叁肆伍陆柒捌玖拾佰仟]+)([章节回集卷部篇])/, function (all, head, num, tail) {
+                  var value = toInt(num);
+                  return value === null ? all : head + value + tail;
+                });
+              };
+              java.toURL = function (url, baseUrl) {
+                var pattern = /^([a-zA-Z][a-zA-Z0-9+.\\-]*:)\\/\\/([^\\/?#:]*)(?::(\\d+))?([^?#]*)(\\?[^#]*)?(#.*)?$/;
+                var text = String(url);
+                var m = pattern.exec(text);
+                if (!m && baseUrl) {
+                  var base = java.toURL(String(baseUrl));
+                  text = text.charAt(0) === '/' ? base.origin + text : base.origin + base.pathname.replace(/[^\\/]*$/, '') + text;
+                  m = pattern.exec(text);
+                }
+                if (!m) throw new Error('Invalid URL: ' + text);
+                var port = m[3] || '', host = m[2] + (port ? ':' + port : '');
+                var result = {
+                  href: text, protocol: m[1], origin: m[1] + '//' + host, host: host, hostname: m[2], port: port,
+                  pathname: m[4] || '/', path: (m[4] || '/') + (m[5] || ''), search: m[5] || '',
+                  query: (m[5] || '').replace(/^\\?/, ''), hash: m[6] || ''
+                };
+                Object.defineProperty(result, 'toString', { value: function () { return text; } });
+                return result;
+              };
               java.head = function (url, headers, timeout) {
                 return responseOf(java.__directRequest('HEAD', String(url), null, headers || {}, timeout));
               };
@@ -1282,6 +1348,22 @@ public struct JavaScriptRuleEvaluator: Sendable {
             }
             return headers
         }
+        let getVariable: @convention(block) () -> String = {
+            BookSourceRuntimeStore.shared.get(sourceID: sourceID, key: "variable")
+        }
+        let setVariable: @convention(block) (Any?) -> Void = {
+            BookSourceRuntimeStore.shared.put(sourceID: sourceID, key: "variable", value: Self.stringify($0))
+        }
+        object?.setObject(getVariable, forKeyedSubscript: "getVariable" as NSString)
+        object?.setObject(setVariable, forKeyedSubscript: "setVariable" as NSString)
+        object?.setObject(source?.bookSourceComment ?? "", forKeyedSubscript: "bookSourceComment" as NSString)
+        object?.setObject(source?.loginUi ?? "", forKeyedSubscript: "loginUi" as NSString)
+        object?.setObject(source?.loginCheckJs ?? "", forKeyedSubscript: "loginCheckJs" as NSString)
+        object?.setObject(source?.coverDecodeJs ?? "", forKeyedSubscript: "coverDecodeJs" as NSString)
+        object?.setObject(source?.variableComment ?? "", forKeyedSubscript: "variableComment" as NSString)
+        object?.setObject(source?.concurrentRate ?? "", forKeyedSubscript: "concurrentRate" as NSString)
+        object?.setObject(source?.exploreScreen ?? "", forKeyedSubscript: "exploreScreen" as NSString)
+        object?.setObject(source?.jsLib ?? "", forKeyedSubscript: "jsLib" as NSString)
         object?.setObject(get, forKeyedSubscript: "get" as NSString)
         object?.setObject(put, forKeyedSubscript: "put" as NSString)
         object?.setObject(getLoginHeader, forKeyedSubscript: "getLoginHeader" as NSString)
@@ -1311,6 +1393,18 @@ public struct JavaScriptRuleEvaluator: Sendable {
               source.getVariable = function () { return source.get('sourceVariable'); };
               source.setVariable = function (value) { return source.put('sourceVariable', value); };
               source.getKey = function () { return source.bookSourceUrl; };
+              source.key = source.bookSourceUrl;
+              source.tag = source.bookSourceName;
+              source.getLoginHeaderMap = function () {
+                var raw = source.getLoginHeader();
+                if (raw === null || raw === undefined || raw === '') return null;
+                var map;
+                try { map = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return null; }
+                if (map === null || typeof map !== 'object') return null;
+                Object.defineProperty(map, 'get', { value: function (key) { return map[String(key)]; } });
+                Object.defineProperty(map, 'put', { value: function (key, value) { map[String(key)] = value; return value; } });
+                return map;
+              };
               source.getTag = function () { return source.bookSourceName; };
               source.getLoginInfoMap = function () {
                 var map = source.__getLoginInfoMap() || {};
@@ -1692,12 +1786,29 @@ public struct JavaScriptRuleEvaluator: Sendable {
         return absolute.absoluteString
     }
 
-    private func rejectUnboundedExecution(_ script: String) throws {
+    /// 书源里常见的 `while(true){... break}`、`for(;;){...}` 是合法写法，不能一刀切拒绝。
+    /// 这里把这几种“无条件循环”改写成带计数的循环：累计超过 300 万次迭代就抛错，
+    /// 既放行正常书源，也能在几秒内终止真正的死循环。`Function` 构造器仍然拒绝。
+    private func guardedScript(_ script: String) throws -> String {
         let compact = script.replacingOccurrences(of: #"\s+"#, with: "", options: .regularExpression).lowercased()
-        let rejected = ["while(true)", "while(1)", "for(;;)", "eval(", "functionconstructor("]
-        if let token = rejected.first(where: compact.contains) {
+        if compact.contains("functionconstructor(") || compact.contains("eval(") {
+            let token = compact.contains("eval(") ? "eval(" : "functionconstructor("
             throw RuleEngineError.resourceLimit(rule: script, detail: "JavaScript 包含未受控执行结构：\(token)")
         }
+        var guarded = script
+        let rewrites: [(pattern: String, template: String)] = [
+            (#"\bwhile\s*\(\s*(?:true|1)\s*\)"#, "while(__legadoLoop())"),
+            (#"\bfor\s*\(\s*;\s*;\s*\)"#, "for(;__legadoLoop();)"),
+            (#"\bfor\s*\(\s*;\s*(?:true|1)\s*;\s*\)"#, "for(;__legadoLoop();)")
+        ]
+        var changed = false
+        for rewrite in rewrites {
+            let updated = guarded.replacingOccurrences(of: rewrite.pattern, with: rewrite.template, options: .regularExpression)
+            if updated != guarded { changed = true; guarded = updated }
+        }
+        guard changed else { return script }
+        let prelude = "var __lgN=0;function __legadoLoop(){if(++__lgN>3000000)throw new Error('脚本循环次数过多，疑似死循环');return true;}\n"
+        return prelude + guarded
     }
 
     private static func stringify(_ value: Any?) -> String {
@@ -1743,6 +1854,26 @@ public struct JavaScriptRuleEvaluator: Sendable {
         })
     }
 
+    /// Legado 里 `result`/`src` 在 JS 中通常是字符串，书源常写 `JSON.parse(result)`。
+    /// 这里的 `result` 可能已是解析后的对象/数组，直接 JSON.parse 会得到 "[object Object]" 而报
+    /// `JSON Parse error: Unexpected identifier "object"`。给对象补一个不可枚举的 toString，
+    /// 使 `JSON.parse(result)` / `String(result)` 得到 JSON 文本，同时 `result.data.list` 这类对象访问不受影响。
+    private static let structuredValuePrelude = """
+    (function (values) {
+      for (var i = 0; i < values.length; i++) {
+        var v = values[i];
+        if (v !== null && typeof v === 'object') {
+          try {
+            Object.defineProperty(v, 'toString', {
+              value: function () { return JSON.stringify(this); },
+              enumerable: false, configurable: true, writable: true
+            });
+          } catch (e) {}
+        }
+      }
+    })([result, src, $]);
+    """
+
     private static let javaImporterBootstrap = #"""
         (function (global) {
           'use strict';
@@ -1758,12 +1889,25 @@ public struct JavaScriptRuleEvaluator: Sendable {
             if (!Array.isArray(value)) throw new TypeError('Java byte[] required');
             return value;
           }
-          function JavaString(value) {
-            var text = new NativeString(Array.isArray(value) ? __legadoUTF8String(value) : (value == null ? '' : value));
+          function JavaString(value, charset) {
+            var decoded;
+            if (Array.isArray(value)) {
+              if (charset && !/^utf-?8$/i.test(NativeString(charset))) {
+                decoded = java.__legadoCharsetDecode(value, NativeString(charset));
+                if (decoded === null || decoded === undefined) throw new Error('Unsupported charset or invalid data: ' + charset);
+              } else {
+                decoded = __legadoUTF8String(value);
+              }
+            } else {
+              decoded = value == null ? '' : value;
+            }
+            var text = new NativeString(decoded);
             Object.defineProperty(text, 'getBytes', {
               value: function (charset) {
                 if (charset && !/^utf-?8$/i.test(NativeString(charset))) {
-                  throw new Error('Unsupported charset: ' + charset);
+                  var encoded = java.__legadoCharsetEncode(NativeString(this), NativeString(charset));
+                  if (!Array.isArray(encoded)) throw new Error('Unsupported charset: ' + charset);
+                  return encoded;
                 }
                 return __legadoUTF8Bytes(NativeString(this));
               }
@@ -1780,30 +1924,49 @@ public struct JavaScriptRuleEvaluator: Sendable {
           function IvParameterSpec(bytes) {
             if (!(this instanceof IvParameterSpec)) return new IvParameterSpec(bytes);
             this.bytes = checkedBytes(bytes).slice();
-            if (this.bytes.length !== 16) throw new Error('AES IV must contain 16 bytes');
             Object.freeze(this.bytes);
             Object.freeze(this);
           }
+          function GCMParameterSpec(tagBits, bytes) {
+            if (!(this instanceof GCMParameterSpec)) return new GCMParameterSpec(tagBits, bytes);
+            this.tagBits = Number(tagBits);
+            this.bytes = checkedBytes(bytes).slice();
+            Object.freeze(this.bytes);
+            Object.freeze(this);
+          }
+          javaClass('GCMParameterSpec', GCMParameterSpec);
           var Cipher = javaClass('Cipher', {
             ENCRYPT_MODE: 1,
             DECRYPT_MODE: 2,
             getInstance: function (algorithm) {
-              if (NativeString(algorithm).toUpperCase() !== 'AES/CBC/PKCS5PADDING') {
+              var transformation = NativeString(algorithm);
+              var algorithmName = transformation.split('/')[0].toUpperCase();
+              if (['AES', 'DES', 'DESEDE', 'TRIPLEDES', '3DES'].indexOf(algorithmName) < 0) {
                 throw new Error('Unsupported Cipher algorithm: ' + algorithm);
               }
-              var key = null, iv = null, operation = null;
+              var isGCM = /\/GCM\//i.test(transformation);
+              var key = null, iv = [], operation = null, tagBits = 128, aad = [];
               return {
                 init: function (mode, spec, parameters) {
-                  if ((mode !== 1 && mode !== 2) || !(spec instanceof SecretKeySpec) ||
-                      spec.algorithm.toUpperCase() !== 'AES' || !(parameters instanceof IvParameterSpec)) {
-                    throw new TypeError('AES key, IV and cipher mode required');
+                  if ((mode !== 1 && mode !== 2) || !(spec instanceof SecretKeySpec)) {
+                    throw new TypeError('Cipher key and mode required');
                   }
-                  operation = mode; key = spec.key; iv = parameters.bytes;
+                  if (parameters !== undefined && parameters !== null &&
+                      !(parameters instanceof IvParameterSpec) && !(parameters instanceof GCMParameterSpec)) {
+                    throw new TypeError('IvParameterSpec or GCMParameterSpec required');
+                  }
+                  operation = mode; key = spec.key; iv = parameters ? parameters.bytes : [];
+                  if (parameters instanceof GCMParameterSpec) tagBits = parameters.tagBits;
                 },
+                updateAAD: function (bytes) { aad = aad.concat(checkedBytes(bytes)); },
                 doFinal: function (bytes) {
                   if (key === null) throw new Error('Cipher not initialized');
-                  var result = __legadoAES(operation, key, iv, checkedBytes(bytes));
-                  if (!Array.isArray(result)) throw new Error('AES/CBC operation failed');
+                  var result = isGCM
+                    ? java.__legadoGCM(operation === 1, key, iv, checkedBytes(bytes), aad, tagBits)
+                    : java.__legadoCrypt(operation === 1, transformation, key, iv, checkedBytes(bytes), 'bytes');
+                  if (!Array.isArray(result)) {
+                    throw new Error('Cipher operation failed (' + transformation + '): ' + java.__legadoCryptError());
+                  }
                   return result;
                 }
               };
@@ -1835,20 +1998,25 @@ public struct JavaScriptRuleEvaluator: Sendable {
           };
           var Mac = javaClass('Mac', {
             getInstance: function (algorithm) {
-              if (NativeString(algorithm).toUpperCase() !== 'HMACSHA1') {
+              var macName = NativeString(algorithm).toUpperCase();
+              var supportedMacs = ['HMACSHA1', 'HMACSHA224', 'HMACSHA256', 'HMACSHA384', 'HMACSHA512', 'HMACMD5'];
+              if (supportedMacs.indexOf(macName) < 0) {
                 throw new Error('Unsupported Mac algorithm: ' + algorithm);
               }
               var key = null;
               return {
                 init: function (spec) {
-                  if (!(spec instanceof SecretKeySpec) || spec.algorithm.toUpperCase() !== 'HMACSHA1') {
-                    throw new TypeError('HmacSHA1 SecretKeySpec required');
+                  if (!(spec instanceof SecretKeySpec) || spec.algorithm.toUpperCase() !== macName) {
+                    throw new TypeError(NativeString(algorithm) + ' SecretKeySpec required');
                   }
                   key = spec.key;
                 },
                 doFinal: function (bytes) {
                   if (key === null) throw new Error('Mac not initialized');
-                  return __legadoHmacSHA1(key, checkedBytes(bytes));
+                  if (macName === 'HMACSHA1') return __legadoHmacSHA1(key, checkedBytes(bytes));
+                  var macResult = java.__legadoHmac(NativeString(algorithm), key, checkedBytes(bytes));
+                  if (!Array.isArray(macResult)) throw new Error('Mac operation failed: ' + algorithm);
+                  return macResult;
                 }
               };
             }
@@ -1865,6 +2033,27 @@ public struct JavaScriptRuleEvaluator: Sendable {
             getEncoder: function () { return Object.freeze({ encodeToString: this.encodeToString }); }
           });
           var Arrays = javaClass('Arrays', {
+            asList: function () {
+              var items = arguments.length === 1 && Array.isArray(arguments[0])
+                ? arguments[0] : Array.prototype.slice.call(arguments);
+              return new ArrayList(items);
+            },
+            copyOf: function (bytes, length) {
+              checkedBytes(bytes);
+              if (!Number.isInteger(length) || length < 0 || length > 2097152) throw new RangeError('Invalid array length');
+              var copied = bytes.slice(0, length);
+              while (copied.length < length) copied.push(0);
+              return copied;
+            },
+            fill: function (bytes, value) {
+              checkedBytes(bytes);
+              for (var i = 0; i < bytes.length; i++) bytes[i] = value;
+            },
+            equals: function (left, right) {
+              if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+              for (var i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+              return true;
+            },
             copyOfRange: function (bytes, from, to) {
               checkedBytes(bytes);
               if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || from > bytes.length || to < from || to - from > 2097152) {
@@ -1888,13 +2077,489 @@ public struct JavaScriptRuleEvaluator: Sendable {
             parseBase64Binary: function (value) { return __legadoBase64DecodeBytes(NativeString(value)); },
             printHexBinary: function (bytes) { return __legadoHexEncodeBytes(checkedBytes(bytes)); }
           });
+          var System = javaClass('System', {
+            arraycopy: function (source, sourcePos, destination, destinationPos, length) {
+              checkedBytes(source); checkedBytes(destination);
+              if (sourcePos < 0 || destinationPos < 0 || length < 0 ||
+                  sourcePos + length > source.length || destinationPos + length > destination.length) {
+                throw new RangeError('arraycopy: last source index out of bounds');
+              }
+              var copied = source.slice(sourcePos, sourcePos + length);
+              for (var i = 0; i < length; i++) destination[destinationPos + i] = copied[i];
+            },
+            currentTimeMillis: function () { return Date.now(); }
+          });
+          var MessageDigest = javaClass('MessageDigest', {
+            getInstance: function (algorithm) {
+              var name = NativeString(algorithm), pending = [];
+              if (!Array.isArray(java.__legadoDigest(name, []))) {
+                throw new Error('Unsupported MessageDigest algorithm: ' + algorithm);
+              }
+              return {
+                update: function (bytes) { pending = pending.concat(checkedBytes(bytes)); },
+                digest: function (bytes) {
+                  if (bytes !== undefined) pending = pending.concat(checkedBytes(bytes));
+                  var out = java.__legadoDigest(name, pending);
+                  pending = [];
+                  if (!Array.isArray(out)) throw new Error('MessageDigest failed: ' + name);
+                  return out;
+                },
+                reset: function () { pending = []; }
+              };
+            }
+          });
+          var UUID = javaClass('UUID', {
+            randomUUID: function () { return new NativeString(java.__legadoRandomUUID()); }
+          });
+          function SecureRandom() {
+            if (!(this instanceof SecureRandom)) return new SecureRandom();
+          }
+          SecureRandom.prototype.nextBytes = function (bytes) {
+            checkedBytes(bytes);
+            var random = java.__legadoRandomBytes(bytes.length);
+            for (var i = 0; i < bytes.length; i++) bytes[i] = random[i];
+          };
+          SecureRandom.prototype.nextInt = function (bound) {
+            var r = java.__legadoRandomBytes(4);
+            var v = (((r[0] & 255) << 24) | ((r[1] & 255) << 16) | ((r[2] & 255) << 8) | (r[3] & 255)) >>> 0;
+            return bound ? v % bound : (v | 0);
+          };
+          javaClass('SecureRandom', SecureRandom);
+          function BigInteger(value, radix) {
+            if (!(this instanceof BigInteger)) return new BigInteger(value, radix);
+            var big;
+            if (typeof value === 'bigint') {
+              big = value;
+            } else if (Array.isArray(value)) {
+              big = 0n;
+              for (var i = 0; i < value.length; i++) big = (big << 8n) | BigInt(value[i] & 255);
+              if (value.length && value[0] < 0) big -= (1n << BigInt(8 * value.length));
+            } else {
+              var text = NativeString(value).trim(), base = radix === undefined ? 10 : Number(radix);
+              var negative = text.charAt(0) === '-';
+              if (negative || text.charAt(0) === '+') text = text.slice(1);
+              if (!text || !(base >= 2 && base <= 36)) throw new Error('NumberFormatException: ' + value);
+              big = 0n;
+              var radixBig = BigInt(base);
+              for (var j = 0; j < text.length; j++) {
+                var digit = parseInt(text.charAt(j), base);
+                if (digit !== digit) throw new Error('NumberFormatException: ' + value);
+                big = big * radixBig + BigInt(digit);
+              }
+              if (negative) big = -big;
+            }
+            Object.defineProperty(this, 'v', { value: big });
+          }
+          (function () {
+            var proto = BigInteger.prototype;
+            function wrap(v) { return new BigInteger(v); }
+            function val(x) { return x instanceof BigInteger ? x.v : new BigInteger(x).v; }
+            function def(name, fn) { Object.defineProperty(proto, name, { value: fn }); }
+            function bitLength(v) { var m = v < 0n ? ~v : v, n = 0; while (m > 0n) { m >>= 1n; n++; } return n; }
+            def('add', function (o) { return wrap(this.v + val(o)); });
+            def('subtract', function (o) { return wrap(this.v - val(o)); });
+            def('multiply', function (o) { return wrap(this.v * val(o)); });
+            def('divide', function (o) { return wrap(this.v / val(o)); });
+            def('remainder', function (o) { return wrap(this.v % val(o)); });
+            def('mod', function (o) {
+              var m = val(o);
+              if (m <= 0n) throw new Error('BigInteger: modulus not positive');
+              return wrap(((this.v % m) + m) % m);
+            });
+            def('and', function (o) { return wrap(this.v & val(o)); });
+            def('or', function (o) { return wrap(this.v | val(o)); });
+            def('xor', function (o) { return wrap(this.v ^ val(o)); });
+            def('not', function () { return wrap(~this.v); });
+            def('shiftLeft', function (n) { n = BigInt(n); return wrap(n >= 0n ? this.v << n : this.v >> -n); });
+            def('shiftRight', function (n) { n = BigInt(n); return wrap(n >= 0n ? this.v >> n : this.v << -n); });
+            def('negate', function () { return wrap(-this.v); });
+            def('abs', function () { return wrap(this.v < 0n ? -this.v : this.v); });
+            def('pow', function (n) { return wrap(this.v ** BigInt(n)); });
+            def('compareTo', function (o) { var t = val(o); return this.v < t ? -1 : (this.v > t ? 1 : 0); });
+            def('equals', function (o) { return o instanceof BigInteger && this.v === o.v; });
+            def('signum', function () { return this.v < 0n ? -1 : (this.v > 0n ? 1 : 0); });
+            def('bitLength', function () { return bitLength(this.v); });
+            def('testBit', function (n) { return ((this.v >> BigInt(n)) & 1n) === 1n; });
+            def('toString', function (r) { return this.v.toString(r === undefined ? 10 : Number(r)); });
+            def('longValue', function () { return Number(BigInt.asIntN(64, this.v)); });
+            def('intValue', function () { return Number(BigInt.asIntN(32, this.v)); });
+            def('doubleValue', function () { return Number(this.v); });
+            def('toByteArray', function () {
+              var length = Math.floor(bitLength(this.v) / 8) + 1, out = [];
+              for (var i = length - 1; i >= 0; i--) {
+                var b = Number((this.v >> BigInt(8 * i)) & 255n);
+                out.push(b > 127 ? b - 256 : b);
+              }
+              return out;
+            });
+            BigInteger.valueOf = function (n) { return wrap(BigInt(n)); };
+            BigInteger.ZERO = wrap(0n);
+            BigInteger.ONE = wrap(1n);
+            BigInteger.TWO = wrap(2n);
+            BigInteger.TEN = wrap(10n);
+          })();
+          javaClass('BigInteger', BigInteger);
+          function ByteArrayInputStream(bytes) {
+            if (!(this instanceof ByteArrayInputStream)) return new ByteArrayInputStream(bytes);
+            this.__b = checkedBytes(bytes).slice();
+            this.__p = 0;
+          }
+          ByteArrayInputStream.prototype.read = function (buffer, offset, length) {
+            if (buffer === undefined) return this.__p < this.__b.length ? (this.__b[this.__p++] & 255) : -1;
+            offset = offset || 0;
+            length = length === undefined ? buffer.length - offset : length;
+            if (this.__p >= this.__b.length) return -1;
+            var count = Math.min(length, this.__b.length - this.__p);
+            for (var i = 0; i < count; i++) buffer[offset + i] = this.__b[this.__p + i];
+            this.__p += count;
+            return count;
+          };
+          ByteArrayInputStream.prototype.available = function () { return this.__b.length - this.__p; };
+          ByteArrayInputStream.prototype.close = function () {};
+          javaClass('ByteArrayInputStream', ByteArrayInputStream);
+          function GZIPInputStream(input) {
+            if (!(this instanceof GZIPInputStream)) return new GZIPInputStream(input);
+            if (!(input instanceof ByteArrayInputStream)) throw new TypeError('ByteArrayInputStream required');
+            var rest = input.__b.slice(input.__p);
+            input.__p = input.__b.length;
+            var out = java.__legadoGunzip(rest);
+            if (!Array.isArray(out)) throw new Error('Not in GZIP format');
+            this.__b = out;
+            this.__p = 0;
+          }
+          GZIPInputStream.prototype = Object.create(ByteArrayInputStream.prototype);
+          javaClass('GZIPInputStream', GZIPInputStream);
+          function ByteArrayOutputStream() {
+            if (!(this instanceof ByteArrayOutputStream)) return new ByteArrayOutputStream();
+            this.__b = [];
+          }
+          ByteArrayOutputStream.prototype.write = function (value, offset, length) {
+            if (Array.isArray(value)) {
+              offset = offset || 0;
+              length = length === undefined ? value.length - offset : length;
+              for (var i = 0; i < length; i++) this.__b.push(value[offset + i]);
+            } else {
+              var b = value & 255;
+              this.__b.push(b > 127 ? b - 256 : b);
+            }
+          };
+          ByteArrayOutputStream.prototype.toByteArray = function () { return this.__b.slice(); };
+          ByteArrayOutputStream.prototype.size = function () { return this.__b.length; };
+          ByteArrayOutputStream.prototype.reset = function () { this.__b = []; };
+          ByteArrayOutputStream.prototype.flush = function () {};
+          ByteArrayOutputStream.prototype.close = function () {};
+          ByteArrayOutputStream.prototype.toString = function () { return __legadoUTF8String(this.__b); };
+          javaClass('ByteArrayOutputStream', ByteArrayOutputStream);
+          var StandardCharsets = javaClass('StandardCharsets', { UTF_8: 'UTF-8' });
+          function ByteOrder(name) { this.name = name; }
+          ByteOrder.prototype.toString = function () { return this.name; };
+          ByteOrder.BIG_ENDIAN = new ByteOrder('BIG_ENDIAN');
+          ByteOrder.LITTLE_ENDIAN = new ByteOrder('LITTLE_ENDIAN');
+          ByteOrder.nativeOrder = function () { return ByteOrder.LITTLE_ENDIAN; };
+          javaClass('ByteOrder', ByteOrder);
+          function ByteBuffer(bytes) {
+            this.__d = bytes; this.__p = 0; this.__l = bytes.length; this.__le = false;
+          }
+          ByteBuffer.allocate = function (size) {
+            if (!Number.isInteger(size) || size < 0 || size > 16777216) throw new RangeError('Invalid capacity');
+            var data = [];
+            for (var i = 0; i < size; i++) data.push(0);
+            return new ByteBuffer(data);
+          };
+          ByteBuffer.wrap = function (bytes) { return new ByteBuffer(checkedBytes(bytes)); };
+          (function () {
+            var P = ByteBuffer.prototype;
+            function toByte(v) { var b = v & 255; return b > 127 ? b - 256 : b; }
+            function putBytes(buf, bytes) {
+              if (buf.__p + bytes.length > buf.__l) throw new RangeError('BufferOverflowException');
+              for (var i = 0; i < bytes.length; i++) buf.__d[buf.__p++] = bytes[i];
+              return buf;
+            }
+            function numberBytes(buf, value, width) {
+              var big = BigInt.asUintN(width * 8, BigInt(Math.trunc(Number(value))));
+              var out = [];
+              for (var i = 0; i < width; i++) out.push(toByte(Number((big >> BigInt(8 * i)) & 255n)));
+              return buf.__le ? out : out.reverse();
+            }
+            function getNumber(buf, width, signed) {
+              if (buf.__p + width > buf.__l) throw new RangeError('BufferUnderflowException');
+              var bytes = buf.__d.slice(buf.__p, buf.__p + width);
+              buf.__p += width;
+              if (!buf.__le) bytes.reverse();
+              var big = 0n;
+              for (var i = width - 1; i >= 0; i--) big = (big << 8n) | BigInt(bytes[i] & 255);
+              return Number(signed ? BigInt.asIntN(width * 8, big) : big);
+            }
+            function def(name, fn) { Object.defineProperty(P, name, { value: fn }); }
+            def('array', function () { return this.__d; });
+            def('capacity', function () { return this.__d.length; });
+            def('position', function (n) { if (n === undefined) return this.__p; this.__p = n; return this; });
+            def('limit', function (n) { if (n === undefined) return this.__l; this.__l = n; return this; });
+            def('remaining', function () { return this.__l - this.__p; });
+            def('hasRemaining', function () { return this.__p < this.__l; });
+            def('flip', function () { this.__l = this.__p; this.__p = 0; return this; });
+            def('rewind', function () { this.__p = 0; return this; });
+            def('clear', function () { this.__p = 0; this.__l = this.__d.length; return this; });
+            def('order', function (o) { if (o === undefined) return this.__le ? ByteOrder.LITTLE_ENDIAN : ByteOrder.BIG_ENDIAN; this.__le = (o === ByteOrder.LITTLE_ENDIAN); return this; });
+            def('put', function (value, offset, length) {
+              if (Array.isArray(value)) {
+                offset = offset || 0; length = length === undefined ? value.length - offset : length;
+                return putBytes(this, value.slice(offset, offset + length));
+              }
+              return putBytes(this, [toByte(value)]);
+            });
+            def('putShort', function (v) { return putBytes(this, numberBytes(this, v, 2)); });
+            def('putInt', function (v) { return putBytes(this, numberBytes(this, v, 4)); });
+            def('putLong', function (v) { return putBytes(this, numberBytes(this, v, 8)); });
+            def('get', function (target) {
+              if (Array.isArray(target)) {
+                if (this.__p + target.length > this.__l) throw new RangeError('BufferUnderflowException');
+                for (var i = 0; i < target.length; i++) target[i] = this.__d[this.__p++];
+                return this;
+              }
+              if (this.__p >= this.__l) throw new RangeError('BufferUnderflowException');
+              return this.__d[this.__p++];
+            });
+            def('getShort', function () { return getNumber(this, 2, true); });
+            def('getInt', function () { return getNumber(this, 4, true); });
+            def('getLong', function () { return getNumber(this, 8, true); });
+          })();
+          javaClass('ByteBuffer', ByteBuffer);
+          var CookieManager = javaClass('CookieManager', {
+            getInstance: function () {
+              return {
+                getCookie: function (url) { var c = cookie.getCookie(NativeString(url)); return c === undefined ? null : c; },
+                setCookie: function (url, value) { cookie.setCookie(NativeString(url), NativeString(value)); },
+                flush: function () {},
+                setAcceptCookie: function () {},
+                removeAllCookies: function () {}
+              };
+            }
+          });
+          var TextUtils = javaClass('TextUtils', {
+            isEmpty: function (value) { return value === null || value === undefined || NativeString(value).length === 0; },
+            equals: function (a, b) { return (a === null || a === undefined) ? (b === null || b === undefined) : NativeString(a) === NativeString(b); },
+            join: function (delimiter, items) {
+              var out = [];
+              for (var i = 0; i < items.length; i++) out.push(NativeString(items[i]));
+              return out.join(NativeString(delimiter));
+            },
+            isDigitsOnly: function (value) { return /^[0-9]*$/.test(NativeString(value)); }
+          });
+          function GZIPOutputStream(target) {
+            if (!(this instanceof GZIPOutputStream)) return new GZIPOutputStream(target);
+            this.__o = target;
+            this.__b = [];
+            this.__closed = false;
+          }
+          GZIPOutputStream.prototype.write = function (value, offset, length) {
+            if (Array.isArray(value)) {
+              offset = offset || 0;
+              length = length === undefined ? value.length - offset : length;
+              for (var i = 0; i < length; i++) this.__b.push(value[offset + i]);
+            } else {
+              var b = value & 255;
+              this.__b.push(b > 127 ? b - 256 : b);
+            }
+          };
+          GZIPOutputStream.prototype.finish = function () {
+            if (this.__closed) return;
+            this.__closed = true;
+            var zipped = java.__legadoGzip(this.__b);
+            if (!Array.isArray(zipped)) throw new Error('GZIP encode failed');
+            this.__o.write(zipped, 0, zipped.length);
+          };
+          GZIPOutputStream.prototype.flush = function () {};
+          GZIPOutputStream.prototype.close = function () { this.finish(); };
+          javaClass('GZIPOutputStream', GZIPOutputStream);
+          function openHttpConnection(urlText) {
+            var method = 'GET', headers = {}, output = null, connectTimeout = 15000, readTimeout = 20000, response = null;
+            function execute() {
+              if (response !== null) return response;
+              var payload = output ? output.toByteArray() : [];
+              var r = java.__legadoHttp(method, urlText, headers, payload, connectTimeout + readTimeout);
+              if (!r) throw new Error('IOException: ' + java.__legadoCryptError());
+              response = r;
+              return r;
+            }
+            function headerValue(name) {
+              var wanted = String(name).toLowerCase();
+              for (var k in response.headers) if (k.toLowerCase() === wanted) return response.headers[k];
+              return null;
+            }
+            return {
+              setRequestMethod: function (m) { method = String(m).toUpperCase(); },
+              getRequestMethod: function () { return method; },
+              setDoOutput: function () {}, setDoInput: function () {}, setUseCaches: function () {},
+              setInstanceFollowRedirects: function () {}, connect: function () {}, disconnect: function () {},
+              setConnectTimeout: function (ms) { connectTimeout = Number(ms) || connectTimeout; },
+              setReadTimeout: function (ms) { readTimeout = Number(ms) || readTimeout; },
+              setRequestProperty: function (k, v) { headers[String(k)] = String(v); },
+              addRequestProperty: function (k, v) {
+                k = String(k);
+                headers[k] = headers[k] === undefined ? String(v) : headers[k] + ', ' + String(v);
+              },
+              getOutputStream: function () { if (!output) output = new ByteArrayOutputStream(); return output; },
+              getResponseCode: function () { return execute().code; },
+              getResponseMessage: function () { execute(); return ''; },
+              getHeaderField: function (name) { execute(); return headerValue(name); },
+              getContentType: function () { execute(); return headerValue('Content-Type'); },
+              getContentLength: function () { return execute().body.length; },
+              getInputStream: function () {
+                var r = execute();
+                if (r.code >= 400) throw new Error('IOException: Server returned HTTP response code: ' + r.code + ' for URL: ' + urlText);
+                return new ByteArrayInputStream(r.body);
+              },
+              getErrorStream: function () {
+                var r = execute();
+                return r.code >= 400 ? new ByteArrayInputStream(r.body) : null;
+              }
+            };
+          }
+          function URL(spec) {
+            if (!(this instanceof URL)) return new URL(spec);
+            var text = NativeString(spec);
+            var m = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/(?:([^@\/?#]*)@)?([^\/?#:]*)(?::(\d+))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/.exec(text);
+            if (!m) throw new Error('MalformedURLException: ' + text);
+            this.__t = text;
+            this.__m = { protocol: m[1].toLowerCase(), user: m[2] === undefined ? null : m[2], host: m[3],
+              port: m[4] === undefined ? -1 : Number(m[4]), path: m[5] || '', query: m[6] === undefined ? null : m[6],
+              ref: m[7] === undefined ? null : m[7] };
+          }
+          URL.prototype.getProtocol = function () { return this.__m.protocol; };
+          URL.prototype.getHost = function () { return this.__m.host; };
+          URL.prototype.getPort = function () { return this.__m.port; };
+          URL.prototype.getDefaultPort = function () { return this.__m.protocol === 'https' ? 443 : (this.__m.protocol === 'http' ? 80 : -1); };
+          URL.prototype.getPath = function () { return this.__m.path; };
+          URL.prototype.getQuery = function () { return this.__m.query; };
+          URL.prototype.getRef = function () { return this.__m.ref; };
+          URL.prototype.getUserInfo = function () { return this.__m.user; };
+          URL.prototype.getAuthority = function () { return this.__m.host + (this.__m.port >= 0 ? ':' + this.__m.port : ''); };
+          URL.prototype.getFile = function () { return this.__m.path + (this.__m.query === null ? '' : '?' + this.__m.query); };
+          URL.prototype.toString = function () { return this.__t; };
+          URL.prototype.toExternalForm = URL.prototype.toString;
+          URL.prototype.openConnection = function () { return openHttpConnection(this.__t); };
+          URL.prototype.openStream = function () { return openHttpConnection(this.__t).getInputStream(); };
+          javaClass('URL', URL);
+          var Thread = javaClass('Thread', {
+            sleep: function (milliseconds) { java.sleep(milliseconds); }
+          });
+          function StringBuilder(initial) {
+            if (!(this instanceof StringBuilder)) return new StringBuilder(initial);
+            this.__s = initial === undefined || initial === null || typeof initial === 'number' ? '' : NativeString(initial);
+          }
+          (function () {
+            var proto = StringBuilder.prototype;
+            proto.append = function (value) { this.__s += value === null || value === undefined ? 'null' : NativeString(value); return this; };
+            proto.toString = function () { return this.__s; };
+            proto.length = function () { return this.__s.length; };
+            proto.insert = function (index, value) { this.__s = this.__s.slice(0, index) + NativeString(value) + this.__s.slice(index); return this; };
+            proto.reverse = function () { this.__s = this.__s.split('').reverse().join(''); return this; };
+            proto.setLength = function (length) { this.__s = this.__s.slice(0, length); };
+            proto.charAt = function (index) { return this.__s.charAt(index); };
+            proto.indexOf = function (text) { return this.__s.indexOf(NativeString(text)); };
+            proto['delete'] = function (start, end) { this.__s = this.__s.slice(0, start) + this.__s.slice(end); return this; };
+            proto.deleteCharAt = function (index) { this.__s = this.__s.slice(0, index) + this.__s.slice(index + 1); return this; };
+            proto.isEmpty = function () { return this.__s.length === 0; };
+          })();
+          javaClass('StringBuilder', StringBuilder);
+          function InputStreamReader(stream, charset) {
+            if (!(this instanceof InputStreamReader)) return new InputStreamReader(stream, charset);
+            if (!stream || !Array.isArray(stream.__b)) throw new TypeError('Unsupported InputStream');
+            var rest = stream.__b.slice(stream.__p);
+            stream.__p = stream.__b.length;
+            this.__text = NativeString(new JavaString(rest, charset || 'UTF-8'));
+          }
+          InputStreamReader.prototype.close = function () {};
+          javaClass('InputStreamReader', InputStreamReader);
+          function BufferedReader(reader) {
+            if (!(this instanceof BufferedReader)) return new BufferedReader(reader);
+            if (!reader || typeof reader.__text !== 'string') throw new TypeError('Unsupported Reader');
+            this.__lines = reader.__text.length ? reader.__text.split(/\r\n|\n|\r/) : [];
+            if (this.__lines.length && this.__lines[this.__lines.length - 1] === '') this.__lines.pop();
+            this.__i = 0;
+          }
+          BufferedReader.prototype.readLine = function () {
+            return this.__i < this.__lines.length ? this.__lines[this.__i++] : null;
+          };
+          BufferedReader.prototype.ready = function () { return this.__i < this.__lines.length; };
+          BufferedReader.prototype.close = function () {};
+          javaClass('BufferedReader', BufferedReader);
+          var Charset = javaClass('Charset', {
+            forName: function (name) { return new NativeString(NativeString(name)); },
+            defaultCharset: function () { return new NativeString('UTF-8'); }
+          });
+          function addListMethods(list) {
+            function def(name, fn) { Object.defineProperty(list, name, { value: fn, writable: true, configurable: true }); }
+            def('add', function (a, b) {
+              if (arguments.length > 1) this.splice(a, 0, b); else this.push(a);
+              return true;
+            });
+            def('get', function (i) {
+              if (i < 0 || i >= this.length) throw new RangeError('Index: ' + i + ', Size: ' + this.length);
+              return this[i];
+            });
+            def('set', function (i, v) { var old = this[i]; this[i] = v; return old; });
+            def('size', function () { return this.length; });
+            def('isEmpty', function () { return this.length === 0; });
+            def('clear', function () { this.length = 0; });
+            def('contains', function (v) { return this.indexOf(v) >= 0; });
+            def('remove', function (x) {
+              if (typeof x === 'number') return this.splice(x, 1)[0];
+              var i = this.indexOf(x);
+              if (i >= 0) { this.splice(i, 1); return true; }
+              return false;
+            });
+            def('addAll', function (other) {
+              for (var i = 0; i < other.length; i++) this.push(other[i]);
+              return other.length > 0;
+            });
+            def('toArray', function () { return this.slice(); });
+            return list;
+          }
+          function ArrayList(source) {
+            var list = [];
+            if (Array.isArray(source)) for (var i = 0; i < source.length; i++) list.push(source[i]);
+            return addListMethods(list);
+          }
+          javaClass('ArrayList', ArrayList);
+          function LinkedList(source) { return ArrayList(source); }
+          javaClass('LinkedList', LinkedList);
+          function newMap() {
+            var map = {};
+            function def(name, fn) { Object.defineProperty(map, name, { value: fn, writable: true, configurable: true }); }
+            function has(k) { return Object.prototype.hasOwnProperty.call(map, k); }
+            def('put', function (k, v) { var old = has(k) ? map[k] : null; map[k] = v; return old; });
+            def('get', function (k) { return has(k) ? map[k] : null; });
+            def('containsKey', function (k) { return has(k); });
+            def('remove', function (k) { var old = has(k) ? map[k] : null; delete map[k]; return old; });
+            def('size', function () { return Object.keys(map).length; });
+            def('isEmpty', function () { return Object.keys(map).length === 0; });
+            def('clear', function () { Object.keys(map).forEach(function (k) { delete map[k]; }); });
+            def('keySet', function () { return new ArrayList(Object.keys(map)); });
+            def('values', function () { return new ArrayList(Object.keys(map).map(function (k) { return map[k]; })); });
+            def('putAll', function (other) { Object.keys(other).forEach(function (k) { map[k] = other[k]; }); });
+            return map;
+          }
+          function HashMap() { return newMap(); }
+          javaClass('HashMap', HashMap);
+          function LinkedHashMap() { return newMap(); }
+          javaClass('LinkedHashMap', LinkedHashMap);
           var packages = {
             javax: {
-              crypto: { Mac: Mac, Cipher: Cipher, spec: { SecretKeySpec: SecretKeySpec, IvParameterSpec: IvParameterSpec } },
+              crypto: { Mac: Mac, Cipher: Cipher, spec: { SecretKeySpec: SecretKeySpec, IvParameterSpec: IvParameterSpec, GCMParameterSpec: GCMParameterSpec } },
               xml: { bind: { DatatypeConverter: DatatypeConverter } }
             },
-            java: { net: { URLEncoder: URLEncoder }, lang: { String: JavaString, Thread: javaClass('Thread', { sleep: __legadoSleep }) }, util: { Base64: Base64, Arrays: Arrays } },
-            android: { util: { Base64: Base64 } }
+            java: {
+              net: { URLEncoder: URLEncoder, URL: URL },
+              lang: { String: JavaString, Thread: javaClass('Thread', { sleep: __legadoSleep }), System: System, StringBuilder: StringBuilder },
+              util: { Base64: Base64, Arrays: Arrays, UUID: UUID, ArrayList: ArrayList, LinkedList: LinkedList, HashMap: HashMap, LinkedHashMap: LinkedHashMap, zip: { GZIPInputStream: GZIPInputStream, GZIPOutputStream: GZIPOutputStream } },
+              math: { BigInteger: BigInteger },
+              security: { MessageDigest: MessageDigest, SecureRandom: SecureRandom },
+              io: { ByteArrayInputStream: ByteArrayInputStream, ByteArrayOutputStream: ByteArrayOutputStream, InputStreamReader: InputStreamReader, BufferedReader: BufferedReader },
+              nio: { ByteBuffer: ByteBuffer, ByteOrder: ByteOrder, charset: { StandardCharsets: StandardCharsets, Charset: Charset } }
+            },
+            android: { util: { Base64: Base64 }, text: { TextUtils: TextUtils }, webkit: { CookieManager: CookieManager } }
           };
           Object.freeze(packages.javax.crypto.spec);
           Object.freeze(packages.javax.crypto);
@@ -1903,15 +2568,24 @@ public struct JavaScriptRuleEvaluator: Sendable {
           Object.freeze(packages.javax);
           Object.freeze(packages.java.net);
           Object.freeze(packages.java.lang);
+          Object.freeze(packages.java.util.zip);
+          Object.freeze(packages.java.math);
+          Object.freeze(packages.java.security);
+          Object.freeze(packages.java.io);
+          Object.freeze(packages.java.nio.charset);
+          Object.freeze(packages.java.nio);
           Object.freeze(packages.java.util);
           Object.freeze(packages.java);
           Object.freeze(packages.android.util);
+          Object.freeze(packages.android.text);
+          Object.freeze(packages.android.webkit);
           Object.freeze(packages.android);
           global.Packages = Object.freeze(packages);
           global.JavaImporter = Object.freeze(function () {
             var imported = Object.create(null);
             var allowedPackages = [packages.java.lang, packages.java.net, packages.java.util,
-              packages.javax.crypto, packages.javax.crypto.spec, packages.javax.xml.bind, packages.android.util];
+              packages.javax.crypto, packages.javax.crypto.spec, packages.javax.xml.bind, packages.android.util,
+              packages.java.math, packages.java.security, packages.java.io, packages.java.util.zip];
             function addClass(value) {
               if (!value || typeof value.__javaSimpleName !== 'string') throw new TypeError('Unsupported Java class import');
               if (!Object.prototype.hasOwnProperty.call(imported, value.__javaSimpleName)) {
