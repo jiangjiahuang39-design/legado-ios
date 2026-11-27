@@ -6,6 +6,10 @@ import UniformTypeIdentifiers
 struct ReaderView: View {
     @AppStorage(EPUBReadingMode.preferenceKey) private var defaultEPUBMode = EPUBReadingMode.original
     @State private var sessionEPUBMode: EPUBReadingMode?
+    private var onClose: (() -> Void)? = nil
+    private var isOpeningTransition = false
+    private var openingTopInset: CGFloat = 0
+    private var onInitialContentLoaded: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -63,6 +67,7 @@ struct ReaderView: View {
     @State private var currentPage = 1
     @State private var totalPages = 1
     @State private var readerRenderRevision = 0
+    @State private var didActivateReadingPresentation = false
     @State private var isWaitingForNextChapter = false
     @State private var isWaitingForPreviousChapter = false
     @State private var httpTTSEngines: [HttpTTS] = []
@@ -70,6 +75,8 @@ struct ReaderView: View {
     @State private var speechTimerTask: Task<Void, Never>?
     @State private var progressSaveTask: Task<Void, Never>?
     @State private var progressSaveGeneration = 0
+    @State private var deferredOpeningProgressSave = false
+    @State private var didNotifyInitialContentLoaded = false
     @State private var speechStartGeneration = 0
     @State private var speechTimerRemaining = 0
     @State private var isSavingBookmark = false
@@ -149,6 +156,18 @@ struct ReaderView: View {
         _model = StateObject(wrappedValue: model)
     }
 
+    init(model: ReaderViewModel, onClose: (() -> Void)? = nil,
+         isOpeningTransition: Bool = false, openingTopInset: CGFloat = 0,
+         onInitialContentLoaded: (() -> Void)? = nil) {
+        self.onClose = onClose
+        self.isOpeningTransition = isOpeningTransition
+        self.openingTopInset = openingTopInset
+        self.onInitialContentLoaded = onInitialContentLoaded
+        _pageAnimation = State(initialValue: model.book.readConfig?.pageAnim.flatMap { $0 >= 0 ? $0 : nil }
+            ?? Self.globalPageAnimation())
+        _model = StateObject(wrappedValue: model)
+    }
+
     init(book: Book, chapters: [BookChapter], initialIndex: Int, source: BookSource) {
         _pageAnimation = State(initialValue: book.readConfig?.pageAnim.flatMap { $0 >= 0 ? $0 : nil }
             ?? Self.globalPageAnimation())
@@ -175,7 +194,20 @@ struct ReaderView: View {
         ))
     }
 
-    init(demoBook book: Book, chapters: [BookChapter], initialIndex: Int, content: String) {
+    init(
+        demoBook book: Book,
+        chapters: [BookChapter],
+        initialIndex: Int,
+        content: String,
+        onClose: (() -> Void)? = nil,
+        isOpeningTransition: Bool = false,
+        openingTopInset: CGFloat = 0,
+        onInitialContentLoaded: (() -> Void)? = nil
+    ) {
+        self.onClose = onClose
+        self.isOpeningTransition = isOpeningTransition
+        self.openingTopInset = openingTopInset
+        self.onInitialContentLoaded = onInitialContentLoaded
         var readerChapters = chapters
         var readerInitialIndex = initialIndex
         var readerContent = content
@@ -234,7 +266,10 @@ struct ReaderView: View {
     var body: some View {
         if isLocalEPUB, (sessionEPUBMode ?? defaultEPUBMode) == .original {
             EPUBReaderView(book: book, chapters: model.chapters, initialIndex: model.currentIndex,
-                           restoresSavedLocation: sessionEPUBMode == nil) { chapterIndex in
+                           restoresSavedLocation: sessionEPUBMode == nil,
+                           onClose: onClose, isOpeningTransition: isOpeningTransition,
+                           openingTopInset: openingTopInset,
+                           onInitialContentLoaded: onInitialContentLoaded) { chapterIndex in
                 model.select(index: chapterIndex)
                 sessionEPUBMode = .text
             }
@@ -245,18 +280,18 @@ struct ReaderView: View {
 
     private var textReaderBody: some View {
         readerCanvas
-        .preferredColorScheme(palette.linked ? nil : (resolvedStyle.id == "night" ? .dark : .light))
-        .readingTabBarHidden()
+        .preferredColorScheme(isOpeningTransition ? nil : (palette.linked ? nil : (resolvedStyle.id == "night" ? .dark : .light)))
         .navigationBarBackButtonHidden(true)
         .background {
             ReaderInteractivePopEnabler()
                 .frame(width: 0, height: 0)
         }
-        .statusBarHidden(hideStatusBar)
-        .readingHomeIndicatorHidden(hideHomeIndicator)
+        .statusBarHidden(!isOpeningTransition && hideStatusBar)
+        .readingHomeIndicatorHidden(!isOpeningTransition && hideHomeIndicator)
         .overlay(alignment: .top) {
             if showsReaderMenu {
                 readerTopChrome
+                    .padding(.top, openingTopInset)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
@@ -265,9 +300,7 @@ struct ReaderView: View {
             Button("好", role: .cancel) { readerSettingSaveError = nil }
         } message: { Text(readerSettingSaveError ?? "") }
         .onAppear {
-            guard !readerSessionActive else { return }
-            readerSessionActive = true
-            activity.beginReading(book)
+            if !isOpeningTransition { activateReadingPresentation() }
             speech.onNextChapter = { moveSpeechToChapter(direction: 1) }
             speech.onPreviousChapter = { moveSpeechToChapter(direction: -1) }
             speech.onRemoteStop = {
@@ -275,16 +308,7 @@ struct ReaderView: View {
                 speechTimerRemaining = 0
                 resumesSpeechAfterChapterLoad = false
             }
-            UIDevice.current.isBatteryMonitoringEnabled = true
-            brightnessBeforeReading = Double(UIScreen.main.brightness)
-            if storedReaderBrightness > 0.05 {
-                followsSystemBrightness = false
-                readerBrightness = storedReaderBrightness
-                UIScreen.main.brightness = CGFloat(storedReaderBrightness)
-            } else {
-                readerBrightness = brightnessBeforeReading
-            }
-            ReaderScreenOrientation.apply(screenOrientation)
+            backgroundImage = ReaderBackgroundStore.load()
             if ProcessInfo.processInfo.arguments.contains("-uiDemoBookmarks") {
                 activeSheet = .bookmarks
             }
@@ -295,19 +319,37 @@ struct ReaderView: View {
                 DispatchQueue.main.async { activeSheet = .appearance }
             }
         }
+        .onChange(of: isOpeningTransition) { isTransitioning in
+            if !isTransitioning {
+                activateReadingPresentation()
+                if deferredOpeningProgressSave {
+                    deferredOpeningProgressSave = false
+                    saveProgress(immediate: true)
+                }
+                if model.hasLoadedCurrentChapter, !didNotifyInitialContentLoaded {
+                    didNotifyInitialContentLoaded = true
+                    onInitialContentLoaded?()
+                }
+            }
+        }
         .onDisappear {
             guard !showsTableOfContents else { return }
             readerSessionActive = false
             model.stopBackgroundReading()
+            if didActivateReadingPresentation {
+                ReaderScreenOrientation.restoreApplicationDefault()
+                activity.cancelReading(book)
+                if !followsSystemBrightness {
+                    UIScreen.main.brightness = CGFloat(brightnessBeforeReading)
+                }
+            }
             isAutoReading = false
             UIApplication.shared.isIdleTimerDisabled = false
             if speech.isSpeaking || speech.isPaused { speech.toggle(text: "") }
             saveProgress(immediate: true)
-            ReaderScreenOrientation.restoreApplicationDefault()
-            if sessionEPUBMode != .original { activity.cancelReading(book) }
             UIDevice.current.isBatteryMonitoringEnabled = false
-            if !followsSystemBrightness {
-                UIScreen.main.brightness = CGFloat(brightnessBeforeReading)
+            if !didActivateReadingPresentation, sessionEPUBMode != .original {
+                activity.cancelReading(book)
             }
             speechTimerTask?.cancel()
             speechTimerRemaining = 0
@@ -399,7 +441,15 @@ struct ReaderView: View {
             guard !Task.isCancelled else { return }
             if progressSaveGeneration == pendingGeneration { progressSaveTask = nil }
             if let chapter = model.currentChapter {
-                await library.updateProgress(for: book, chapter: chapter, position: readerPosition)
+                if isOpeningTransition {
+                    deferredOpeningProgressSave = true
+                } else {
+                    await library.updateProgress(for: book, chapter: chapter, position: readerPosition)
+                    if !didNotifyInitialContentLoaded {
+                        didNotifyInitialContentLoaded = true
+                        onInitialContentLoaded?()
+                    }
+                }
             }
             if resumesSpeechAfterChapterLoad, !model.content.isEmpty {
                 resumesSpeechAfterChapterLoad = false
@@ -496,11 +546,29 @@ struct ReaderView: View {
     }
 
 
+    private func activateReadingPresentation() {
+        guard !didActivateReadingPresentation else { return }
+        didActivateReadingPresentation = true
+        readerSessionActive = true
+        activity.beginReading(book)
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        brightnessBeforeReading = Double(UIScreen.main.brightness)
+        if storedReaderBrightness > 0.05 {
+            followsSystemBrightness = false
+            readerBrightness = storedReaderBrightness
+            UIScreen.main.brightness = CGFloat(storedReaderBrightness)
+        } else {
+            readerBrightness = brightnessBeforeReading
+        }
+        ReaderScreenOrientation.apply(screenOrientation)
+    }
+
     private var readerCanvas: some View {
         ZStack {
             readerContent
             readerMenuDismissOverlay
         }
+        .padding(.top, openingTopInset)
         .background {
             ZStack {
                 backgroundColor
@@ -511,8 +579,8 @@ struct ReaderView: View {
                 }
             }
             .clipped()
-            .ignoresSafeArea()
         }
+        .background(backgroundColor)
     }
 
     private var waitingForChapter: Bool {
@@ -520,7 +588,25 @@ struct ReaderView: View {
     }
 
     @ViewBuilder private var readerContent: some View {
-        if pageAnimation != 3, model.content.isEmpty && model.hasLoadedCurrentChapter {
+        if pageAnimation != 3,
+           (model.isLoading && model.content.isEmpty) || (model.content.isEmpty && !model.hasLoadedCurrentChapter) {
+            VStack(spacing: 14) {
+                ProgressView()
+                    .controlSize(.regular)
+                Text("正在打开本章")
+                    .font(.subheadline.weight(.medium))
+                Text(model.title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .foregroundStyle(foregroundColor)
+            .background(backgroundColor)
+            .contentShape(Rectangle())
+            .onTapGesture { showsReaderMenu.toggle() }
+            .transition(.opacity)
+        } else if pageAnimation != 3, model.content.isEmpty && model.hasLoadedCurrentChapter {
             VStack(spacing: 18) {
                 Image(systemName: "text.page.slash").font(.largeTitle)
                 Text(model.currentChapterError == nil ? "正文为空" : "本章加载失败").font(.title3.weight(.semibold))
@@ -534,7 +620,7 @@ struct ReaderView: View {
             .padding(24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .foregroundStyle(foregroundColor)
-            .background(backgroundColor.ignoresSafeArea())
+            .background(backgroundColor)
         } else {
             VStack(spacing: 0) {
                 if headerVisible { readerTipBar(isHeader: true) }
@@ -977,6 +1063,10 @@ struct ReaderView: View {
         .primary
     }
 
+    private func closeReader() {
+        if let onClose { onClose() } else { dismiss() }
+    }
+
     @ViewBuilder private var readerChromeBackground: some View {
         if resolvedStyle.id == "night" {
             Color(uiColor: .secondarySystemBackground)
@@ -1000,7 +1090,7 @@ struct ReaderView: View {
 
     private var readerTopChrome: some View {
         HStack(spacing: 4) {
-            readerChromeIconButton("chevron.backward", label: "返回") { dismiss() }
+            readerChromeIconButton("chevron.backward", label: "返回") { closeReader() }
             VStack(alignment: .leading, spacing: 3) {
                 Text(book.name)
                     .font(.subheadline.weight(.medium))
