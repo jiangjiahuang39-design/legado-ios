@@ -136,6 +136,9 @@
 		AA1100000000000000000002 /* ReplaceRuleEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2200000000000000000002; };
 		AA1100000000000000000003 /* SyntaxCodeEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2200000000000000000003; };
 		AA1100000000000000000004 /* QRCodeImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2200000000000000000004; };
+		AA1100000000000000000103 /* LegadoWebViewBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2200000000000000000103 /* LegadoWebViewBridge.swift */; };
+		AA1100000000000000000102 /* LegadoJsoupBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2200000000000000000102 /* LegadoJsoupBridge.swift */; };
+		AA1100000000000000000101 /* LegadoCryptoBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2200000000000000000101 /* LegadoCryptoBridge.swift */; };
 		AA1100000000000000000007 /* ReplaceRuleTester.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2200000000000000000007; };
 		AA1100000000000000000008 = {isa = PBXBuildFile; fileRef = AA2200000000000000000008; };
 		AA1100000000000000000009 = {isa = PBXBuildFile; fileRef = AA2200000000000000000009; };
@@ -151,7 +154,7 @@
         ED1000000000000000000003 /* EPUBReaderIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED2000000000000000000003; };
 		C01800000000000000000001 /* ChapterImages.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01700000000000000000001; };
 		C01800000000000000000002 /* ReaderComicView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01700000000000000000002; };
-/* End PBXBuildFile section */
+	/* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		DA2000000000000000000002 /* AppearanceContrastTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/LegadoReaderTests/AppearanceContrastTests.swift; sourceTree = SOURCE_ROOT; };
@@ -285,6 +288,9 @@
 		AA2200000000000000000002 /* ReplaceRuleEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Features/Rules/ReplaceRuleEditorView.swift; sourceTree = SOURCE_ROOT; };
 		AA2200000000000000000003 /* SyntaxCodeEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Features/Rules/Editor/SyntaxCodeEditor.swift; sourceTree = SOURCE_ROOT; };
 		AA2200000000000000000004 /* QRCodeImportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Features/Rules/Editor/QRCodeImportView.swift; sourceTree = SOURCE_ROOT; };
+		AA2200000000000000000103 /* LegadoWebViewBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/LegadoCore/RuleEngine/LegadoWebViewBridge.swift; sourceTree = SOURCE_ROOT; };
+		AA2200000000000000000102 /* LegadoJsoupBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/LegadoCore/RuleEngine/LegadoJsoupBridge.swift; sourceTree = SOURCE_ROOT; };
+		AA2200000000000000000101 /* LegadoCryptoBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/LegadoCore/RuleEngine/LegadoCryptoBridge.swift; sourceTree = SOURCE_ROOT; };
 		AA2200000000000000000007 /* ReplaceRuleTester.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/LegadoCore/Book/ReplaceRuleTester.swift; sourceTree = SOURCE_ROOT; };
 		AA2200000000000000000008 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/LegadoCore/Import/QRCodeDecoder.swift; sourceTree = SOURCE_ROOT; };
 		AA2200000000000000000009 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/LegadoReaderUITests/RuleEditorUITests.swift; sourceTree = SOURCE_ROOT; };
@@ -297,7 +303,7 @@
         ED2000000000000000000003 /* EPUBReaderIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/LegadoReaderTests/EPUBReaderIntegrationTests.swift; sourceTree = SOURCE_ROOT; };
 		C01700000000000000000001 /* ChapterImages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/LegadoCore/Book/ChapterImages.swift; sourceTree = SOURCE_ROOT; };
 		C01700000000000000000002 /* ReaderComicView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Features/Reader/ReaderComicView.swift; sourceTree = SOURCE_ROOT; };
-/* End PBXFileReference section */
+	/* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		B30000000000000000000051 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
@@ -326,6 +332,9 @@
 				AA2200000000000000000003 /* SyntaxCodeEditor.swift */,
 				AA2200000000000000000004 /* QRCodeImportView.swift */,
 				AA2200000000000000000007 /* ReplaceRuleTester.swift */,
+				AA2200000000000000000101 /* LegadoCryptoBridge.swift */,
+				AA2200000000000000000102 /* LegadoJsoupBridge.swift */,
+				AA2200000000000000000103 /* LegadoWebViewBridge.swift */,
 				AA2200000000000000000008,
 				B20000000000000000000050 /* ReaderScrollGestureTests.swift */,
 				AA2200000000000000000009,
@@ -782,6 +791,9 @@
 				AA1100000000000000000003 /* SyntaxCodeEditor.swift in Sources */,
 				AA1100000000000000000004 /* QRCodeImportView.swift in Sources */,
 				AA1100000000000000000007 /* ReplaceRuleTester.swift in Sources */,
+				AA1100000000000000000101 /* LegadoCryptoBridge.swift in Sources */,
+				AA1100000000000000000102 /* LegadoJsoupBridge.swift in Sources */,
+				AA1100000000000000000103 /* LegadoWebViewBridge.swift in Sources */,
 				AA1100000000000000000008,
 				910000000000000000000007 /* AppDiagnostics.swift in Sources */,
 				910000000000000000000006 /* AboutView.swift in Sources */,
