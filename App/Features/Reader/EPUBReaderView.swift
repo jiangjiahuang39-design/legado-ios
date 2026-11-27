@@ -6,6 +6,18 @@ import UIKit
 @preconcurrency import ReadiumStreamer
 @preconcurrency import ReadiumNavigator
 
+
+private struct EPUBReaderSafeAreaInsetsKey: EnvironmentKey {
+    static let defaultValue = EdgeInsets()
+}
+
+extension EnvironmentValues {
+    var epubReaderSafeAreaInsets: EdgeInsets {
+        get { self[EPUBReaderSafeAreaInsetsKey.self] }
+        set { self[EPUBReaderSafeAreaInsetsKey.self] = newValue }
+    }
+}
+
 enum EPUBReadingMode: String, CaseIterable {
     case original, text
     static let preferenceKey = "defaultEPUBReadingMode"
@@ -48,6 +60,7 @@ final class EPUBReaderModel: ObservableObject, EPUBNavigatorDelegate {
     @Published private(set) var isLoading = false
     @Published var showsControls = true
     var onLocationChanged: ((Locator, BookChapter) -> Void)?
+    var isPresentationTransitioning = false
     let book: Book
     let chapters: [BookChapter]
     let initialIndex: Int
@@ -236,6 +249,7 @@ final class EPUBReaderModel: ObservableObject, EPUBNavigatorDelegate {
 
 struct EPUBReaderView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.epubReaderSafeAreaInsets) private var readerSafeAreaInsets
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var library: BookLibraryModel
@@ -245,6 +259,13 @@ struct EPUBReaderView: View {
     @State private var showsSettings = false
     @State private var showsBookmarks = false
     let onReadText: (Int) -> Void
+    private let onClose: (() -> Void)?
+    private let isOpeningTransition: Bool
+    private let openingTopInset: CGFloat
+    private let onInitialContentLoaded: (() -> Void)?
+    @State private var isClosing = false
+    @State private var didActivateReadingSession = false
+    @State private var didNotifyInitialContentLoaded = false
     @State private var switchingToText = false
     @State private var collapsedTOCEntries: Set<Int> = []
     @State private var sliderProgress = 0.0
@@ -256,8 +277,14 @@ struct EPUBReaderView: View {
     @AppStorage("epubTheme") private var theme = "system"
 
     init(book: Book, chapters: [BookChapter], initialIndex: Int, restoresSavedLocation: Bool,
+         onClose: (() -> Void)? = nil, isOpeningTransition: Bool = false,
+         openingTopInset: CGFloat = 0, onInitialContentLoaded: (() -> Void)? = nil,
          onReadText: @escaping (Int) -> Void) {
         self.onReadText = onReadText
+        self.onClose = onClose
+        self.isOpeningTransition = isOpeningTransition
+        self.openingTopInset = openingTopInset
+        self.onInitialContentLoaded = onInitialContentLoaded
         _model = StateObject(wrappedValue: EPUBReaderModel(book: book, chapters: chapters, initialIndex: initialIndex,
                                                          restoresSavedLocation: restoresSavedLocation))
     }
@@ -269,7 +296,7 @@ struct EPUBReaderView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if model.showsControls { topBar }
+            if model.showsControls { topBar.padding(.top, readerSafeAreaInsets.top) }
             Group {
                 if let navigator = model.navigator {
                     EPUBNavigatorHost(navigator: navigator)
@@ -278,42 +305,65 @@ struct EPUBReaderView: View {
                         Text("无法打开 EPUB").font(.headline)
                         Text(error).font(.footnote).foregroundStyle(.secondary)
                         Button("重试") { Task { await model.open(preferences: preferences) } }
-                        Button("返回书架") { dismiss() }
+                        Button("返回书架") { closeReader() }
                     }.padding()
                 } else {
                     ProgressView("正在打开 EPUB…")
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if model.showsControls, model.navigator != nil { bottomBar }
+            if model.showsControls, model.navigator != nil {
+                bottomBar.padding(.bottom, readerSafeAreaInsets.bottom)
+            }
         }
-        .background(Color(uiColor: .systemBackground))
+        .padding(.top, openingTopInset)
+        .background {
+            Color(uiColor: .systemBackground)
+            if !isOpeningTransition { Color(uiColor: .systemBackground).ignoresSafeArea() }
+        }
         .navigationBarHidden(true)
-        .readingTabBarHidden()
         .task {
+            model.isPresentationTransitioning = isOpeningTransition
             model.onLocationChanged = { locator, chapter in
-                if !isScrubbing, let progress = locator.locations.totalProgression { sliderProgress = progress }
+                if !isScrubbing { sliderProgress = locator.locations.totalProgression ?? 0 }
+                guard !model.isPresentationTransitioning, !isClosing else { return }
                 saveTask?.cancel()
                 saveTask = Task {
                     do { try await Task.sleep(nanoseconds: 350_000_000) } catch { return }
+                    guard !Task.isCancelled, !model.isPresentationTransitioning, !isClosing else { return }
                     await library.updateProgress(for: model.book, chapter: chapter, epubLocation: locator.jsonString)
                 }
             }
-            activity.beginReading(model.book)
+            if !isOpeningTransition { activateReadingSession() }
             if model.navigator == nil { await model.open(preferences: preferences) }
+            if !model.isPresentationTransitioning { saveProgress() }
+            if !model.isPresentationTransitioning, model.navigator != nil, !didNotifyInitialContentLoaded {
+                didNotifyInitialContentLoaded = true
+                onInitialContentLoaded?()
+            }
+        }
+        .onChange(of: isOpeningTransition) { isTransitioning in
+            model.isPresentationTransitioning = isTransitioning
+            if !isTransitioning {
+                activateReadingSession()
+                saveProgress()
+                if model.navigator != nil, !didNotifyInitialContentLoaded {
+                    didNotifyInitialContentLoaded = true
+                    onInitialContentLoaded?()
+                }
+            }
         }
         .onChange(of: preferences) { model.apply($0) }
         .onChange(of: scenePhase) { phase in
+            guard didActivateReadingSession else { return }
             if phase != .active { saveProgress(); Task { await activity.endReading(model.book) } }
             else { activity.beginReading(model.book) }
         }
         .onDisappear {
             guard !showsTOC else { return }
+            if !isClosing { saveProgress() }
             model.onLocationChanged = nil
-            if !switchingToText {
-                saveProgress()
-                Task { await activity.endReading(model.book) }
-            }
+            if didActivateReadingSession { Task { await activity.endReading(model.book) } }
         }
         .fullScreenCover(isPresented: $showsTOC) { tocSheet }
         .sheet(isPresented: $showsSettings) { settingsSheet }
@@ -323,9 +373,28 @@ struct EPUBReaderView: View {
         } message: { Text(model.errorMessage ?? "") }
     }
 
+    private func activateReadingSession() {
+        guard !didActivateReadingSession else { return }
+        didActivateReadingSession = true
+        activity.beginReading(model.book)
+    }
+
+    private func closeReader() {
+        guard !isClosing else { return }
+        isClosing = true
+        saveTask?.cancel()
+        Task { @MainActor in
+            if let locator = model.location, let chapter = model.currentChapter {
+                await library.updateProgress(for: model.book, chapter: chapter, epubLocation: locator.jsonString)
+            }
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            if let onClose { onClose() } else { dismiss() }
+        }
+    }
+
     private var topBar: some View {
         HStack(spacing: 16) {
-            Button { saveProgress(); dismiss() } label: { Image(systemName: "chevron.left") }
+            Button { closeReader() } label: { Image(systemName: "chevron.left") }
                 .accessibilityLabel("返回书架")
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.book.name).font(.subheadline.weight(.semibold)).lineLimit(1)
@@ -475,9 +544,10 @@ struct EPUBReaderView: View {
     }
 
     private func saveProgress() {
+        guard !model.isPresentationTransitioning, !isClosing else { return }
         saveTask?.cancel()
         guard let locator = model.location, let chapter = model.currentChapter else { return }
-        Task { await library.updateProgress(for: model.book, chapter: chapter, epubLocation: locator.jsonString) }
+        saveTask = Task { await library.updateProgress(for: model.book, chapter: chapter, epubLocation: locator.jsonString) }
     }
 }
 
