@@ -93,7 +93,7 @@ public struct BookSourceImporter: Sendable {
                 let placeholder = BookSource(bookSourceUrl: entry["bookSourceUrl"]?.stringValue ?? "",
                                              bookSourceName: entry["bookSourceName"]?.stringValue ?? "第 \(index + 1) 项")
                 rejected.append(.init(source: placeholder, issues: [.init(severity: .error, code: "source.decode",
-                    field: "[\(index)]", message: "第 \(index + 1) 项：\(error.localizedDescription)")]))
+                    field: "[\(index)]", message: "第 \(index + 1) 项：\(Self.describeDecodingError(error))")]))
             }
         }
         return .init(sources: sources, rejected: rejected)
@@ -238,5 +238,33 @@ public struct BookSourceImporter: Sendable {
             if capacity == produced { return nil }
         }
         return nil
+    }
+}
+
+
+extension BookSourceImporter {
+    /// `DecodingError.localizedDescription` 只会说 “The data couldn’t be read…”，这里补上出问题的字段路径。
+    static func describeDecodingError(_ error: Error) -> String {
+        guard let decoding = error as? DecodingError else { return error.localizedDescription }
+        func path(_ keys: [CodingKey]) -> String {
+            var text = ""
+            for key in keys {
+                if let index = key.intValue { text += "[\(index)]" }
+                else { text += text.isEmpty ? key.stringValue : ".\(key.stringValue)" }
+            }
+            return text.isEmpty ? "(根)" : text
+        }
+        switch decoding {
+        case .typeMismatch(let type, let context):
+            return "字段 \(path(context.codingPath)) 类型不符，期望 \(type)。\(context.debugDescription)"
+        case .valueNotFound(let type, let context):
+            return "字段 \(path(context.codingPath)) 为空，期望 \(type)。"
+        case .keyNotFound(let key, let context):
+            return "缺少字段 \(path(context.codingPath + [key]))。"
+        case .dataCorrupted(let context):
+            return "字段 \(path(context.codingPath)) 数据无效。\(context.debugDescription)"
+        @unknown default:
+            return error.localizedDescription
+        }
     }
 }
