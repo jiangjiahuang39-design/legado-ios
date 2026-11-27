@@ -9,6 +9,26 @@ final class BookshelfReadViewModel: ObservableObject {
     @Published private(set) var resolvedBook: Book?
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
+    private var pending: BookUpdateReport?
+    private var reader: ReaderViewModel?
+
+    func makeReaderModel(source: BookSource?) -> ReaderViewModel? {
+        if let reader { return reader }
+        guard let book = resolvedBook, !chapters.isEmpty else { return nil }
+        if book.origin != "local", let source {
+            reader = ReaderViewModel(book: book, chapters: chapters, initialIndex: book.durChapterIndex, source: source)
+        } else {
+            reader = ReaderViewModel(book: book, chapters: chapters, initialIndex: book.durChapterIndex)
+        }
+        return reader
+    }
+
+    func commitPendingUpdate(_ commit: @MainActor (BookUpdateReport) async -> Bool) async -> Bool {
+        guard let report = pending else { return false }
+        pending = nil
+        return await commit(report)
+    }
+
     private let localService: LocalBookService
     private let updateCoordinator: BookUpdateCoordinator
 
@@ -20,7 +40,7 @@ final class BookshelfReadViewModel: ObservableObject {
         self.updateCoordinator = updateCoordinator
     }
 
-    func load(book: Book, source: BookSource?, commitUpdate: (@MainActor (BookUpdateReport) async -> Bool)? = nil) async {
+    func load(book: Book, source: BookSource?, deferCommit: Bool = false, commitUpdate: (@MainActor (BookUpdateReport) async -> Bool)? = nil) async {
         guard chapters.isEmpty, !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
@@ -46,9 +66,10 @@ final class BookshelfReadViewModel: ObservableObject {
             errorMessage = "目录与阅读进度不一致，且当前书籍的书源不存在。请先恢复或更换书源。"
             return
         }
-        let report = await updateCoordinator.refresh(book: book, source: source, persistDirectory: commitUpdate == nil)
+        let report = await updateCoordinator.refresh(book: book, source: source, persistDirectory: !deferCommit && commitUpdate == nil)
         if report.refreshed, Self.matchesReadingProgress(report.book, chapters: report.chapters) {
-            if let commitUpdate, !(await commitUpdate(report)) {
+            if deferCommit { pending = report }
+            else if let commitUpdate, !(await commitUpdate(report)) {
                 errorMessage = "更新后的书籍保存失败，已保留原书籍和阅读位置。"
                 return
             }
