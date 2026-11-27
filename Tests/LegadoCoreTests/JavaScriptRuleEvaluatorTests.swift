@@ -144,8 +144,8 @@ struct JavaScriptRuleEvaluatorTests {
 
     @Test func javaCipherRejectsInvalidInputsAndUnsupportedPackageImports() throws {
         for script in [
-            "var i = new JavaImporter(); i.importPackage(Packages.java.io);",
-            "Packages.javax.crypto.Cipher.getInstance('DES/ECB/NoPadding');",
+            "var i = new JavaImporter(); i.importPackage(Packages.java.nio);",
+            "Packages.javax.crypto.Cipher.getInstance('RSA/ECB/PKCS1Padding');",
             "var i = new JavaImporter(Packages.java.lang, Packages.javax.crypto.spec, Packages.javax.crypto); with(i) { var c = Cipher.getInstance('AES/CBC/PKCS5Padding'); c.init(2, SecretKeySpec(String('short').getBytes(), 'AES'), IvParameterSpec(String('0123456789abcdef').getBytes())); c.doFinal([1, 2, 3]); }"
         ] {
             #expect(throws: RuleEngineError.self) {
