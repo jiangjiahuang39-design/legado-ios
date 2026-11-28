@@ -248,7 +248,9 @@ private struct BookshelfBookTransitionAnimatableModifier: ViewModifier, Animatab
         let turn = min(max((linearT - 0.08) / 0.84, 0), 1)
         let coverAngle = -90 * turn
         let coverOpacity = isSettled ? 0 : 1 - min(max((turn - 0.96) / 0.04, 0), 1)
-        let veil = 1 - min(max((linearT - 0.90) / 0.10, 0), 1)
+        // Reveal the reader with the expanding viewport, not the independent
+        // cover-turn progress. Finish fading just before the viewport reaches full size.
+        let veil = 1 - min(max((t - 0.82) / 0.12, 0), 1)
 
         ZStack(alignment: .topLeading) {
             // Clip a stationary, full-window reader; never scale or fade its host.
