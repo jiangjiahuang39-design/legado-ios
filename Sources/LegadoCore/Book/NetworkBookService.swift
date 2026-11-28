@@ -485,44 +485,55 @@ public struct NetworkBookService: Sendable {
                             pageChapters.reserveCapacity(items.count)
                             for item in items {
                                 try cancellation.check()
-                                let fragment = PageDocument(value: item, baseURL: baseURL, isFragment: true)
-                                var itemContext = pageContextSnapshot
-                                itemContext.cancellation = cancellation
-                                var chapter = BookChapter(url: "", title: "", bookUrl: bookURL, index: 0)
-                                chapter.baseUrl = canonicalURL
-                                itemContext.chapter = chapter
-                                let name = evaluateSynchronously(rules.chapterName, in: fragment, context: itemContext)
-                                itemContext.variables = name.variables
-                                chapter.title = name.joinedString ?? ""
-                                itemContext.chapter = chapter
-                                let chapterURLRuleStartedAt = Date()
-                                let url = evaluateSynchronously(rules.chapterUrl, in: fragment, context: itemContext)
-                                chapterURLRuleDuration += Date().timeIntervalSince(chapterURLRuleStartedAt)
-                                itemContext.variables = url.variables
-                                chapter.url = (fragment.isHTML ? url.leadingString : url.joinedString) ?? ""
-                                itemContext.chapter = chapter
-                                let info = evaluateSynchronously(rules.updateTime, in: fragment, context: itemContext)
-                                itemContext.variables = info.variables
-                                let volume = evaluateSynchronously(rules.isVolume, in: fragment, context: itemContext)
-                                itemContext.variables = volume.variables
-                                chapter.isVolume = truthy(volume.joinedString)
-                                chapter.tag = nonempty(info.joinedString)
-                                if nonempty(chapter.url) == nil {
-                                    chapter.url = chapter.isVolume ? "#volume-\(initialCount + pageChapters.count)" : canonicalURL
+                                // Each chapter can create several short-lived JavaScriptCore
+                                // contexts and Objective-C bridge objects. Drain those objects
+                                // before moving on to the next chapter instead of retaining the
+                                // whole page's autoreleased objects until the worker job ends.
+                                let parsedItem = autoreleasepool { () -> (BookChapter?, [RuleDiagnostic], TimeInterval) in
+                                    let fragment = PageDocument(value: item, baseURL: baseURL, isFragment: true)
+                                    var itemContext = pageContextSnapshot
+                                    itemContext.cancellation = cancellation
+                                    var chapter = BookChapter(url: "", title: "", bookUrl: bookURL, index: 0)
+                                    chapter.baseUrl = canonicalURL
+                                    itemContext.chapter = chapter
+                                    let name = evaluateSynchronously(rules.chapterName, in: fragment, context: itemContext)
+                                    itemContext.variables = name.variables
+                                    chapter.title = name.joinedString ?? ""
+                                    itemContext.chapter = chapter
+                                    let chapterURLRuleStartedAt = Date()
+                                    let url = evaluateSynchronously(rules.chapterUrl, in: fragment, context: itemContext)
+                                    let urlDuration = Date().timeIntervalSince(chapterURLRuleStartedAt)
+                                    itemContext.variables = url.variables
+                                    chapter.url = (fragment.isHTML ? url.leadingString : url.joinedString) ?? ""
+                                    itemContext.chapter = chapter
+                                    let info = evaluateSynchronously(rules.updateTime, in: fragment, context: itemContext)
+                                    itemContext.variables = info.variables
+                                    let volume = evaluateSynchronously(rules.isVolume, in: fragment, context: itemContext)
+                                    itemContext.variables = volume.variables
+                                    chapter.isVolume = truthy(volume.joinedString)
+                                    chapter.tag = nonempty(info.joinedString)
+                                    if nonempty(chapter.url) == nil {
+                                        chapter.url = chapter.isVolume ? "#volume-\(initialCount + pageChapters.count)" : canonicalURL
+                                    }
+                                    itemContext.chapter = chapter
+                                    let vip = evaluateSynchronously(rules.isVip, in: fragment, context: itemContext)
+                                    itemContext.variables = vip.variables
+                                    chapter.isVip = truthy(vip.joinedString)
+                                    itemContext.chapter = chapter
+                                    let pay = evaluateSynchronously(rules.isPay, in: fragment, context: itemContext)
+                                    itemContext.variables = pay.variables
+                                    let itemDiagnostics = [name, url, volume, vip, pay, info].flatMap(\.diagnostics)
+                                    guard nonempty(chapter.title) != nil else {
+                                        return (nil, itemDiagnostics, urlDuration)
+                                    }
+                                    chapter.url = resolve(chapter.url, against: finalURL)
+                                    chapter.isPay = truthy(pay.joinedString)
+                                    chapter.variable = encodeVariables(itemContext.variables)
+                                    return (chapter, itemDiagnostics, urlDuration)
                                 }
-                                itemContext.chapter = chapter
-                                let vip = evaluateSynchronously(rules.isVip, in: fragment, context: itemContext)
-                                itemContext.variables = vip.variables
-                                chapter.isVip = truthy(vip.joinedString)
-                                itemContext.chapter = chapter
-                                let pay = evaluateSynchronously(rules.isPay, in: fragment, context: itemContext)
-                                itemContext.variables = pay.variables
-                                pageDiagnostics += [name, url, volume, vip, pay, info].flatMap(\.diagnostics)
-                                guard nonempty(chapter.title) != nil else { continue }
-                                chapter.url = resolve(chapter.url, against: finalURL)
-                                chapter.isPay = truthy(pay.joinedString)
-                                chapter.variable = encodeVariables(itemContext.variables)
-                                pageChapters.append(chapter)
+                                if let chapter = parsedItem.0 { pageChapters.append(chapter) }
+                                pageDiagnostics += parsedItem.1
+                                chapterURLRuleDuration += parsedItem.2
                             }
                             return (pageChapters, pageDiagnostics, chapterURLRuleDuration)
                         }
