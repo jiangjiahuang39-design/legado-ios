@@ -294,7 +294,7 @@ struct JavaScriptRuleEvaluatorTests {
     }
     @Test func sharedLibraryHasAnIndependentByteLimit() throws {
         var source = BookSource(bookSourceUrl: "https://library.example.test", bookSourceName: "Large shared library")
-        source.jsLib = "/*" + String(repeating: "测", count: 25_000) + "*/ function value() { return 'ok'; }"
+        source.jsLib = "/*" + String(repeating: "测", count: 50_000) + "*/ function value() { return 'ok'; }"
         let context = RuleExecutionContext(source: source)
         let evaluator = JavaScriptRuleEvaluator()
         let output = try evaluator.evaluate(script: "value()", result: .null, executionContext: context)
