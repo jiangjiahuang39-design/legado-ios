@@ -1362,6 +1362,7 @@ struct BookshelfReadView: View {
     @StateObject private var model: BookshelfReadViewModel
 
     init(book: Book, source: BookSource?, preparation: BookshelfReadViewModel? = nil,
+         coordinator: BookUpdateCoordinator? = nil,
          isOpeningTransition: Bool = false,
          openingTopInset: CGFloat = 0, onInitialContentLoaded: (() -> Void)? = nil,
          onClose: (() -> Void)? = nil) {
@@ -1371,7 +1372,9 @@ struct BookshelfReadView: View {
         self.openingTopInset = openingTopInset
         self.onInitialContentLoaded = onInitialContentLoaded
         self.onClose = onClose
-        _model = StateObject(wrappedValue: preparation ?? BookshelfReadViewModel())
+        _model = StateObject(wrappedValue: preparation ?? BookshelfReadViewModel(
+            updateCoordinator: coordinator ?? .init(repository: AppBookChapterRepository.live())
+        ))
     }
 
     var body: some View {
