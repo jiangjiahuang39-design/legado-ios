@@ -248,21 +248,33 @@ private struct BookshelfBookTransitionAnimatableModifier: ViewModifier, Animatab
         let turn = min(max((linearT - 0.08) / 0.84, 0), 1)
         let coverAngle = -90 * turn
         let coverOpacity = isSettled ? 0 : 1 - min(max((turn - 0.96) / 0.04, 0), 1)
-        // Reveal the reader with the expanding viewport, not the independent
-        // cover-turn progress. Finish fading just before the viewport reaches full size.
-        let veil = 1 - min(max((t - 0.82) / 0.12, 0), 1)
+        // The reader page is pushed out from the left as the cover opens.
+        // Reveal the full-height page with a left-to-right wipe instead of
+        // exposing a stationary reader through a growing cover-shaped window.
+        let pageReveal = min(max((linearT - 0.12) / 0.82, 0), 1)
+        let pageRevealWidth = endRect.width * pageReveal
+        let pageEdgeWidth = min(22, endRect.width * 0.035)
 
         ZStack(alignment: .topLeading) {
-            // Clip a stationary, full-window reader; never scale or fade its host.
+            // Keep the reader at its final size. The moving reveal edge supplies
+            // the page-opening motion; no host scaling or global opacity fade.
             ZStack {
+                paperBackground
                 content
-                paperBackground.opacity(veil).allowsHitTesting(false)
             }
             .frame(width: endRect.width, height: endRect.height)
             .mask(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .frame(width: bookRect.width, height: bookRect.height)
-                    .offset(x: bookRect.minX, y: bookRect.minY)
+                Rectangle()
+                    .frame(width: pageRevealWidth, height: bookRect.height)
+                    .offset(x: 0, y: bookRect.minY)
+            }
+
+            if pageReveal > 0.01 && pageReveal < 0.999 {
+                LinearGradient(colors: [.black.opacity(0.20), .clear],
+                               startPoint: .leading, endPoint: .trailing)
+                    .frame(width: pageEdgeWidth, height: bookRect.height)
+                    .offset(x: max(0, pageRevealWidth - pageEdgeWidth), y: bookRect.minY)
+                    .allowsHitTesting(false)
             }
 
             if !isSettled {
