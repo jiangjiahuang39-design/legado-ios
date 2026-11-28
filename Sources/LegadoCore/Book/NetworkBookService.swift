@@ -419,6 +419,7 @@ public struct NetworkBookService: Sendable {
                 rule: book.tocUrl
             )])
         }
+        let tocStartedAt = Date()
         let reverse = listRule.hasPrefix("-")
         if listRule.hasPrefix("-") || listRule.hasPrefix("+") { listRule.removeFirst() }
         let firstURL = nonempty(book.tocUrl) ?? book.bookUrl
@@ -446,14 +447,28 @@ public struct NetworkBookService: Sendable {
                 )
                 let canonicalURL = response.finalURL.absoluteString
                 guard visited.insert(pageIdentity(pageURL, finalURL: canonicalURL)).inserted else { continue }
+                let responseDecodeStartedAt = Date()
                 let document = PageDocument(response: response)
+                let responseDecodeMilliseconds = Date().timeIntervalSince(responseDecodeStartedAt) * 1_000
+                DiagnosticLog.shared.record(
+                    .info,
+                    category: "目录性能",
+                    message: "阶段=响应解码 书名=\(book.name) 页码=\(visited.count) 响应字节=\(response.data.count) 解码耗时毫秒=\(Int(responseDecodeMilliseconds))"
+                )
                 var pageContext = sharedContext
                 pageContext.variables.merge(response.requestVariables) { _, requestValue in requestValue }
                 pageContext.baseURL = document.baseURL
+                let listRuleStartedAt = Date()
                 let list = await evaluate(listRule, in: document, listMode: true, context: pageContext)
+                let listRuleMilliseconds = Date().timeIntervalSince(listRuleStartedAt) * 1_000
                 diagnostics += list.diagnostics
                 pageContext.variables = list.variables
                 let items = list.listItems(rule: listRule)
+                DiagnosticLog.shared.record(
+                    .info,
+                    category: "目录性能",
+                    message: "阶段=目录列表规则 书名=\(book.name) 页码=\(visited.count) 条目数=\(items.count) 耗时毫秒=\(Int(listRuleMilliseconds))"
+                )
                 if !items.isEmpty {
                     let cancellation = RuleExecutionCancellation()
                     let baseURL = document.baseURL
@@ -461,10 +476,12 @@ public struct NetworkBookService: Sendable {
                     let bookURL = book.bookUrl
                     let pageContextSnapshot = pageContext
                     let initialCount = chapters.count
+                    let itemParseStartedAt = Date()
                     let parsed = try await withTaskCancellationHandler {
                         try await RuleExecutionWorker.runRule {
                             var pageChapters: [BookChapter] = []
                             var pageDiagnostics: [RuleDiagnostic] = []
+                            var chapterURLRuleDuration: TimeInterval = 0
                             pageChapters.reserveCapacity(items.count)
                             for item in items {
                                 try cancellation.check()
@@ -478,7 +495,9 @@ public struct NetworkBookService: Sendable {
                                 itemContext.variables = name.variables
                                 chapter.title = name.joinedString ?? ""
                                 itemContext.chapter = chapter
+                                let chapterURLRuleStartedAt = Date()
                                 let url = evaluateSynchronously(rules.chapterUrl, in: fragment, context: itemContext)
+                                chapterURLRuleDuration += Date().timeIntervalSince(chapterURLRuleStartedAt)
                                 itemContext.variables = url.variables
                                 chapter.url = (fragment.isHTML ? url.leadingString : url.joinedString) ?? ""
                                 itemContext.chapter = chapter
@@ -505,11 +524,17 @@ public struct NetworkBookService: Sendable {
                                 chapter.variable = encodeVariables(itemContext.variables)
                                 pageChapters.append(chapter)
                             }
-                            return (pageChapters, pageDiagnostics)
+                            return (pageChapters, pageDiagnostics, chapterURLRuleDuration)
                         }
                     } onCancel: {
                         cancellation.cancel()
                     }
+                    let itemParseMilliseconds = Date().timeIntervalSince(itemParseStartedAt) * 1_000
+                    DiagnosticLog.shared.record(
+                        .info,
+                        category: "目录性能",
+                        message: "阶段=章节条目解析 书名=\(book.name) 页码=\(visited.count) 输入条目=\(items.count) 有效章节=\(parsed.0.count) 总耗时毫秒=\(Int(itemParseMilliseconds)) 章节地址规则累计毫秒=\(Int(parsed.2 * 1_000))"
+                    )
                     chapters += parsed.0
                     diagnostics += parsed.1
                 }
@@ -535,13 +560,28 @@ public struct NetworkBookService: Sendable {
         // reverse -> LinkedHashSet -> reverse sequence does. Overlapping TOC
         // pages can contain a stale title/VIP status for the same chapter URL.
         if !reverse { chapters.reverse() }
+        let beforeDeduplicationCount = chapters.count
+        let deduplicationStartedAt = Date()
         var unique = Set<String>()
         chapters = chapters.filter { unique.insert($0.url).inserted }
+        let deduplicationMilliseconds = Date().timeIntervalSince(deduplicationStartedAt) * 1_000
         if book.readConfig?.reverseToc != true { chapters.reverse() }
+        DiagnosticLog.shared.record(
+            .info,
+            category: "目录性能",
+            message: "阶段=目录去重与排序 书名=\(book.name) 去重前=\(beforeDeduplicationCount) 去重后=\(chapters.count) 耗时毫秒=\(Int(deduplicationMilliseconds))"
+        )
         for index in chapters.indices { chapters[index].index = index }
         if let script = nonempty(rules.formatJs), !chapters.isEmpty {
             do {
+                let formattingStartedAt = Date()
                 let formatted = try await JavaScriptRuleEvaluator().formatChapterTitles(script: script, chapters: chapters)
+                let formattingMilliseconds = Date().timeIntervalSince(formattingStartedAt) * 1_000
+                DiagnosticLog.shared.record(
+                    .info,
+                    category: "目录性能",
+                    message: "阶段=目录标题格式化 书名=\(book.name) 章节数=\(chapters.count) 耗时毫秒=\(Int(formattingMilliseconds))"
+                )
                 chapters = formatted.chapters
                 diagnostics += formatted.diagnostics
             } catch is CancellationError {
@@ -553,6 +593,12 @@ public struct NetworkBookService: Sendable {
         if chapters.isEmpty {
             diagnostics.append(diagnostic(code: "toc.empty", message: "目录规则未解析到章节", rule: listRule))
         }
+        let tocTotalMilliseconds = Date().timeIntervalSince(tocStartedAt) * 1_000
+        DiagnosticLog.shared.record(
+            .info,
+            category: "目录性能",
+            message: "阶段=目录加载完成 书名=\(book.name) 页数=\(visited.count) 最终章节数=\(chapters.count) 总耗时毫秒=\(Int(tocTotalMilliseconds))"
+        )
         return .init(chapters: chapters, diagnostics: diagnostics, pagesVisited: visited.count)
     }
 
