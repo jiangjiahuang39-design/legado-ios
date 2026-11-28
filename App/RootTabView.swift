@@ -409,7 +409,9 @@ struct RootTabView: View {
     }
 
     var body: some View {
-        TabView(selection: $selection) {
+        GeometryReader { rootGeometry in
+            ZStack {
+                TabView(selection: $selection) {
             ReadingNavigationStack {
                 Group {
                     if ProcessInfo.processInfo.arguments.contains("-uiDemoSourceSwitch") {
@@ -481,19 +483,20 @@ struct RootTabView: View {
                 .tabItem { Label("我的", systemImage: "person").environment(\.symbolVariants, .none) }
                 .tag(Tab.my)
         }
-        .readingTabBarBackground()
-        .overlay {
-            GeometryReader { geometry in
+                .readingTabBarBackground()
+                .preferredColorScheme(themeMode == "2" ? .dark : (themeMode == "1" || themeMode == "3" ? .light : nil))
+                .transaction { transaction in
+                    if themeMode == "3" { transaction.animation = nil }
+                }
+
+                // Keep the reader transition as a sibling of TabView.
+                // Capture safe-area insets before the overlay expands to the full window.
                 BookshelfCoverTransitionOverlay(
                     transition: bookshelfCoverTransition,
-                    safeAreaInsets: geometry.safeAreaInsets
+                    safeAreaInsets: rootGeometry.safeAreaInsets
                 )
+                .zIndex(1_000)
             }
-            .ignoresSafeArea()
-        }
-        .preferredColorScheme(themeMode == "2" ? .dark : (themeMode == "1" || themeMode == "3" ? .light : nil))
-        .transaction { transaction in
-            if themeMode == "3" { transaction.animation = nil }
         }
         .sheet(item: $sourceLibrary.pendingImport, onDismiss: {
             sourceImportIsPresented = false
